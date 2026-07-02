@@ -1,0 +1,20 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Runtime output (contain sensitive run data)
+state/
+reports/
+logs/
+
+# Excel plan files (contain sensitive scheduling / host data)
+*.xlsx
+*.xlsx:Zone.Identifier
+
+# Credentials
+.env
+
+# Old manual wave mapping files (superseded by Excel host sheet)
+waves/

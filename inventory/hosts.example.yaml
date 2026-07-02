@@ -1,0 +1,105 @@
+# Team-maintained node inventory. Copy to hosts.yaml and fill in your real estate.
+# This file does NOT change month to month - the wave Excel only tells the tool which
+# of these hosts are in scope for a given run.
+#
+# role must be one of: deployer, indexer, forwarder, search_head_simple, search_head_stretched
+# pas_gateway (global or per environment): PAS/CyberArk SSH gateway to connect through,
+#   as "host" or "host:port" (default port 22). --pas-gateway on the CLI overrides.
+# pas_port (global): port encoded in PAS login username as #PORT for all hosts (e.g. 10100).
+#   Can be overridden per host.
+# pas_domain_suffix (global or per host): FQDN suffix appended to hostname in the PAS login
+#   username (e.g. ".sky.local" -> "<user>@pas.prd.spk@<hostname>.sky.local#10100").
+#   Set per host to "" to suppress the global suffix for that host.
+# manual_identities: list of "splunk" and/or "root" - identities that cannot be used over
+#   SSH on that host (CyberArk GUI only). The tool will pause and ask you to perform those
+#   actions manually instead of running them.
+
+stretched_sh_sites: [milano, roma]
+pas_port: 10100
+# pas_gateway: <gateway-host>:10100
+
+hosts:
+  prdmilbbspkfw01:
+    role: forwarder
+    site: milano
+
+  prdmilbbspkfw02:
+    role: forwarder
+    site: milano
+    # Has a host-specific override sequence (StreamSets pipelines) - see
+    # auto_patchinator/actions/sequences.py HOST_OVERRIDES.
+
+  prdmilbbmsosh01:
+    role: search_head_simple
+    site: milano
+  prdmilbbmsosh02:
+    role: search_head_simple
+    site: milano
+  prdmilbbmsosh03:
+    role: search_head_simple
+    site: milano
+
+  # Stretched search head cluster - 5 members per site.
+  prdmilbbspksh01:
+    role: search_head_stretched
+    site: milano
+  prdmilbbspksh02:
+    role: search_head_stretched
+    site: milano
+  prdmilbbspksh03:
+    role: search_head_stretched
+    site: milano
+  prdmilbbspksh04:
+    role: search_head_stretched
+    site: milano
+  prdmilbbspksh05:
+    role: search_head_stretched
+    site: milano
+  prdrmlbbspksh01:
+    role: search_head_stretched
+    site: roma
+    pas_domain_suffix: .sky.local
+  prdrmlbbspksh02:
+    role: search_head_stretched
+    site: roma
+    pas_domain_suffix: .sky.local
+  prdrmlbbspksh03:
+    role: search_head_stretched
+    site: roma
+    pas_domain_suffix: .sky.local
+  prdrmlbbspksh04:
+    role: search_head_stretched
+    site: roma
+    pas_domain_suffix: .sky.local
+  prdrmlbbspksh05:
+    role: search_head_stretched
+    site: roma
+    pas_domain_suffix: .sky.local
+
+  prdrmlbbspkdp01:
+    role: deployer
+    site: roma
+    pas_domain_suffix: .sky.local
+
+  # stretched indexer cluster 4 peers Milan - 3 Rome 
+  prdmilbbspkidx01:
+    role: indexer
+    site: milano
+  prdmilbbspkidx02:
+    role: indexer
+    site: milano
+  prdmilbbspkidx03:
+    role: indexer
+    site: milano
+  prdmilbbspkidx04:
+    role: indexer
+    site: milano
+  prdrmlbbspkidx01:
+    role: indexer
+    site: roma
+  prdrmlbbspkidx02:
+    role: indexer
+    site: roma
+  prdrmlbbspkidx03:
+    role: indexer
+    site: roma

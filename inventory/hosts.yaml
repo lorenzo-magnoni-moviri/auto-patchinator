@@ -1,0 +1,165 @@
+# Team-maintained node inventory.  All environments live here; use --environment
+# prod (default) or --environment test at the CLI to select which nodes are active.
+#
+# role: deployer | indexer | forwarder | search_head_simple | search_head_stretched
+# environment: prod (default) | test
+# pas_gateway (global or per environment): the PAS/CyberArk SSH gateway to connect
+#   through, as "host" or "host:port" (default port 22).  Without it the tool SSHes
+#   directly to each node, which PAS-fronted nodes refuse.  --pas-gateway overrides.
+# pas_port (global): port encoded in PAS login username as #PORT for all hosts.
+# pas_domain_suffix (global or per host): FQDN suffix appended to hostname in the
+#   PAS login username.  Set per host to "" to suppress the global suffix.
+# manual_identities: identities that cannot be used over SSH (CyberArk GUI only).
+# splunk_su_command: overrides the default su command for the splunk identity.
+
+stretched_sh_sites: [milano, roma]
+pas_port: 10100
+pas_gateway: pas.sky.local          # or <gateway-host>:10100 if it listens there
+
+environments:
+  prod:
+    pas_splunk_suffix: pas.prd.spk
+    pas_root_suffix: pas.prd.spk.root
+  test:
+    pas_splunk_suffix: pas.tst.spk
+    pas_root_suffix: pas.tst.spk.root
+
+hosts:
+
+  # ---------------------------------------------------------------------------
+  # PROD
+  # ---------------------------------------------------------------------------
+
+  prdmilbbspkfw01:
+    role: forwarder
+    site: milano
+  prdmilbbspkfw02:
+    role: forwarder
+    site: milano
+    # Has a host-specific override sequence (StreamSets pipelines) - see
+    # auto_patchinator/actions/sequences.py HOST_OVERRIDES.
+  prdrmlbbspkfw01:
+    role: forwarder
+    site: roma
+    pas_domain_suffix: .sky.local
+
+  prdmilbbmsosh01:
+    role: search_head_simple
+    site: milano
+  prdmilbbmsosh02:
+    role: search_head_simple
+    site: milano
+  prdmilbbmsosh03:
+    role: search_head_simple
+    site: milano
+
+  # Stretched search head cluster - 5 members per site.
+  prdmilbbspksh01:
+    role: search_head_stretched
+    site: milano
+  prdmilbbspksh02:
+    role: search_head_stretched
+    site: milano
+  prdmilbbspksh03:
+    role: search_head_stretched
+    site: milano
+  prdmilbbspksh04:
+    role: search_head_stretched
+    site: milano
+  prdmilbbspksh05:
+    role: search_head_stretched
+    site: milano
+  prdrmlbbspksh01:
+    role: search_head_stretched
+    site: roma
+    pas_domain_suffix: .sky.local
+  prdrmlbbspksh02:
+    role: search_head_stretched
+    site: roma
+    pas_domain_suffix: .sky.local
+  prdrmlbbspksh03:
+    role: search_head_stretched
+    site: roma
+    pas_domain_suffix: .sky.local
+  prdrmlbbspksh04:
+    role: search_head_stretched
+    site: roma
+    pas_domain_suffix: .sky.local
+  prdrmlbbspksh05:
+    role: search_head_stretched
+    site: roma
+    pas_domain_suffix: .sky.local
+
+  prdmilbbspkdp01:
+    role: deployer
+    site: milano
+  prdrmlbbspkdp01:
+    role: deployer
+    site: roma
+    pas_domain_suffix: .sky.local
+
+  prdmilbbspkix01:
+    role: indexer
+    site: milano
+    splunk_su_command: "sudo su - splunk"
+  prdmilbbspkix02:
+    role: indexer
+    site: milano
+    splunk_su_command: "sudo su - splunk"
+  prdmilbbspkix03:
+    role: indexer
+    site: milano
+    splunk_su_command: "sudo su - splunk"
+  prdmilbbspkix04:
+    role: indexer
+    site: milano
+  prdrmlbbspkix01:
+    role: indexer
+    site: roma
+    pas_domain_suffix: .sky.local
+  prdrmlbbspkix02:
+    role: indexer
+    site: roma
+    pas_domain_suffix: .sky.local
+  prdrmlbbspkix03:
+    role: indexer
+    site: roma
+    pas_domain_suffix: .sky.local
+
+  # ---------------------------------------------------------------------------
+  # TEST
+  # ---------------------------------------------------------------------------
+
+  tstmilbbspkdp01:
+    role: deployer
+    site: milano
+    environment: test
+
+  tstmilbbspkfw01:
+    role: forwarder
+    site: milano
+    environment: test
+
+  tstmilbbspkix01:
+    role: indexer
+    site: milano
+    environment: test
+    splunk_su_command: "sudo su - splunk"
+  tstmilbbspkix02:
+    role: indexer
+    site: milano
+    environment: test
+    splunk_su_command: "sudo su - splunk"
+
+  tstmilbbspksh01:
+    role: search_head_simple
+    site: milano
+    environment: test
+  tstmilbbspksh02:
+    role: search_head_simple
+    site: milano
+    environment: test
+  tstmilbbspksh03:
+    role: search_head_simple
+    site: milano
+    environment: test

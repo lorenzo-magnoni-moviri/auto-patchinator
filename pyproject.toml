@@ -1,0 +1,21 @@
+[project]
+name = "auto-patchinator"
+version = "0.1.0"
+description = "Reads the monthly Splunk patch-wave Excel plan and walks the Splunk BB team through stop/disable/enable/start for each in-scope node."
+requires-python = ">=3.10"
+dependencies = [
+    "openpyxl>=3.1",
+    "PyYAML>=6.0",
+    "paramiko>=3.4",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+auto-patchinator = "auto_patchinator.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["auto_patchinator*"]

@@ -92,10 +92,6 @@ Open items, roughly in priority order.
 - [ ] **`--environment` in report** — the markdown report (`reports/report.py`) does
   not currently record which environment was targeted. Add it to the report header.
 
-- [ ] **Roma nodes in test inventory** — the test cluster currently only has Milano
-  nodes. Add Roma test equivalents if/when they exist, so the stretched-SH captain
-  transfer path can be tested end-to-end.
-
 - [ ] **GitHub Actions CI** — run `auto-patchinator run --excel <mockup.xlsx>
   --inventory inventory/hosts.example.yaml` in dry-run mode on every push to catch
   import errors and plan-resolution regressions without needing a test suite.

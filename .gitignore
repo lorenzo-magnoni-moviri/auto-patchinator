@@ -18,3 +18,4 @@ logs/
 
 # Old manual wave mapping files (superseded by Excel host sheet)
 waves/
+.claude/settings.json

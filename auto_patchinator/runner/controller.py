@@ -138,7 +138,7 @@ class RunController:
             self._save()
             outcome = self._handle_step(excel_step)
             if outcome == "quit":
-                print("\nStopping. Progress saved - rerun to resume from here.")
+                self._handle_quit()
                 return
             if outcome == "back":
                 index = max(0, index - 1)
@@ -156,6 +156,19 @@ class RunController:
 
     def _save(self) -> None:
         store.save(self.state, self._state_dir)
+
+    def _handle_quit(self) -> None:
+        try:
+            answer = input("\nSave progress for later resume? [Y/n] ").strip().lower()
+        except EOFError:
+            answer = "y"
+        if answer in ("n", "no"):
+            store.delete_run(self.state.run_id, self._state_dir)
+            _log.info("operator discarded run state %s", self.state.run_id)
+            print("Progress discarded.")
+        else:
+            _log.info("operator saved run state %s", self.state.run_id)
+            print("Progress saved — rerun the same command to resume from here.")
 
     # ------------------------------------------------------------------
     # Step handling
@@ -204,7 +217,7 @@ class RunController:
         print("                          manual confirmations and failures")
         print("      [A] automatic for ALL remaining steps (stop asking)")
         print("      [t] task-by-task  - confirm every action before it runs")
-        print("      [q] quit (progress is saved)")
+        print("      [q] quit")
         while True:
             choice = input("    > ").strip()
             if choice == "A":
@@ -305,7 +318,7 @@ class RunController:
 
     @staticmethod
     def _failure_menu() -> str:
-        prompt = "Retry? [r] retry  [d] mark as done manually  [s] skip  [q] quit (progress saved)\n> "
+        prompt = "Retry? [r] retry  [d] mark as done manually  [s] skip  [q] quit\n> "
         while True:
             choice = input(prompt).strip().lower()
             if choice in ("r", "d", "s", "q"):
@@ -327,7 +340,7 @@ class RunController:
             options.append(("s", "skip"))
             options.append(("b", "back to previous step"))
             options.append(("j", "jump to a specific step"))
-            options.append(("q", "quit (progress is saved)"))
+            options.append(("q", "quit"))
             choice = self._prompt_choice(options)
             _log.info("operator chose %r for %s / %s", choice, scope, action.name)
 

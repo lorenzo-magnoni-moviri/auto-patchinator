@@ -203,10 +203,8 @@ directly — the fixture references hosts from the checked-in
 `inventory/hosts.example.yaml` instead). This catches import errors and plan-resolution
 regressions that a unit test importing internal functions directly might miss.
 
-The workflow only *reports* status — to make it actually block a merge, add a branch
-protection rule on `main` (GitHub → Settings → Branches → add rule → require a pull
-request and require the `test` status check to pass; the check only appears in the
-picker after the workflow has run at least once).
+`main` is branch-protected: a pull request and a passing `test` status check are both
+required before a merge is allowed.
 
 ---
 

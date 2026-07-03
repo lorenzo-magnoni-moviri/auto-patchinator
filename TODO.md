@@ -42,14 +42,9 @@ Open items, roughly in priority order.
 - [x] **GitHub Actions CI** — `.github/workflows/ci.yml` runs `python -m pytest` plus a
   dry-run plan-resolution smoke test (`scripts/gen_ci_fixture.py` builds a synthetic,
   non-sensitive plan Excel referencing `inventory/hosts.example.yaml` hosts, since real
-  wave Excels are gitignored) on every push and pull request. **Still open:** enabling
-  the branch protection rule on GitHub that actually requires this check before merge —
-  that's a repo-settings change, not something committable, see the next item.
-- [ ] **Enable branch protection on `main`** — go to the GitHub repo → Settings →
-  Branches → add a rule for `main` → check "Require a pull request before merging" and
-  "Require status checks to pass before merging" → select the `test` check (from
-  `ci.yml`, appears in the picker after the workflow has run at least once) → Save.
-  Without this, the CI workflow only reports status — it doesn't block anything.
+  wave Excels are gitignored) on every push and pull request.
+- [x] **Branch protection on `main`** — PR + passing `test` status check now required
+  before merge, configured in GitHub repo settings.
 
 ---
 

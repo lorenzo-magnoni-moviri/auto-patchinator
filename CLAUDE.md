@@ -15,15 +15,16 @@ pip install -e .
 
 # Run - LIVE by default (real SSH, prompts for credentials, shows MODE banner).
 # --excel, --inventory, --pas-gateway are all optional (see cli.py: _prompt_for_excel_path,
-# _resolve_inventory_path, _resolve_pas_gateway). Group->host mapping is read directly from
-# the Excel's 'List Host NO IT' sheet, cross-referenced against the inventory.
-auto-patchinator run --excel <plan.xlsx> --inventory inventory/hosts.yaml --pas-gateway <gateway-host>
+# _resolve_inventory_path, _resolve_pas_gateway) - pas_gateway normally comes from
+# hosts.yaml and never needs to be passed on the CLI. Group->host mapping is read
+# directly from the Excel's 'List Host NO IT' sheet, cross-referenced against the inventory.
+auto-patchinator run --excel <plan.xlsx> --inventory inventory/hosts.yaml
 
 # Simulate only (no SSH) - for testing plans end to end
 auto-patchinator run ... --dry-run
 
 # Verify SSH connectivity to all inventory nodes
-auto-patchinator check-connectivity --inventory inventory/hosts.yaml --pas-gateway <gateway-host>
+auto-patchinator check-connectivity --inventory inventory/hosts.yaml
 ```
 
 ```bash

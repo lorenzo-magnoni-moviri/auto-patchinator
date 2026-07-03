@@ -104,14 +104,16 @@ the current directory, and if that's empty too, it just prompts for a path.
 
 ## Commands
 
-`--excel`, `--inventory`, and `--pas-gateway` are all optional — see "Files you
-maintain" above for the fallback rules (plans/ directory picker, default
-`inventory/hosts.yaml`, `pas_gateway` from the inventory YAML).
+`--excel` and `--inventory` are both optional — see "Files you maintain" above for the
+fallback rules (plans/ directory picker, default `inventory/hosts.yaml`). `--pas-gateway`
+is also optional and normally never needed: it falls back to `pas_gateway` in
+`hosts.yaml`, which doesn't change month to month. Only pass it explicitly to override
+that default for a one-off run (e.g. testing against a different gateway).
 
 ### Live run (the default)
 
 ```bash
-auto-patchinator run --pas-gateway pas.sky.local
+auto-patchinator run
 ```
 
 No `.xlsx` files found where the tool looks? You'll be prompted for a path. Prompts once
@@ -130,7 +132,7 @@ this to verify a plan (or a new wave's Excel) before a live run.
 ### Test environment
 
 ```bash
-auto-patchinator run --environment test --pas-gateway pas.sky.local
+auto-patchinator run --environment test
 ```
 
 Filters to `tst*` nodes and uses the `test` PAS suffixes from `hosts.yaml` automatically.
@@ -141,13 +143,13 @@ Verify SSH access to every node before a live run:
 
 ```bash
 # Prod
-auto-patchinator check-connectivity --pas-gateway pas.sky.local
+auto-patchinator check-connectivity
 
 # Test
-auto-patchinator check-connectivity --environment test --pas-gateway pas.sky.local
+auto-patchinator check-connectivity --environment test
 
 # Root identity only
-auto-patchinator check-connectivity --identity root --pas-gateway pas.sky.local
+auto-patchinator check-connectivity --identity root
 
 # Specific hosts
 auto-patchinator check-connectivity --hosts prdmilbbspksh01 prdmilbbspksh02
@@ -253,7 +255,8 @@ Examples:
 ### Captain transfer (stretched SH cluster)
 
 Injected **once per wave** — not per group:
-- **Before the first SH stop**: manual step to transfer captain to the Roma site
+- **Before the first SH stop**: manual step to transfer captain to the site NOT being
+  patched (Milano → Roma, or Roma → Milano — whichever site the wave isn't touching)
 - **After the last SH start**: manual step to revert captain election to dynamic
 
 The admin password required by `bootstrap shcluster-captain` is **never stored in this

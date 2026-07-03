@@ -50,11 +50,18 @@ Open items, roughly in priority order.
 
 ## Must-do before first production live run
 
-- [ ] **Verify PAS su flow on prod nodes** — the PTY marker protocol and sudo/su
-  password-prompt detection in `executor/ssh.py` have only been tested against the
-  test environment (`pas.tst.spk`). The production gateway (`pas.prd.spk`) may behave
-  differently (different banner, different prompt timing). Do a `check-connectivity`
-  against a few prod nodes before the first live wave.
+- [x] **Verify PAS su flow on prod nodes** — root identity connectivity confirmed
+  working on 2026-07-03 (via `check-connectivity --identity root` against a 9-host
+  sample, `whoami='root'` on 8/9) **and** by the operator manually testing root SSH
+  against the full prod fleet: **the connection works for all the nodes except
+  `prdrmlbbspkdp01`.** Confirms the PTY marker protocol and su flow in `executor/ssh.py`
+  work correctly against the real `pas.prd.spk.root` gateway.
+
+- [ ] **`prdrmlbbspkdp01` root login rejected** — `Authentication failed` at the PAS
+  gateway itself (same signature as the broken test hosts below) — the one node out of
+  the entire prod fleet where root doesn't connect. Looks like an isolated CyberArk
+  entitlement gap for this specific host/identity pair, not a systemic prod issue —
+  flag it to whoever manages the CyberArk safes.
 
 - [ ] **BLOCKED: Root identity connectivity is broken in test** — ran
   `check-connectivity --identity root --environment test` (2026-07-03) against all 7
@@ -67,18 +74,15 @@ Open items, roughly in priority order.
   - `tstmilbbspkix01`, `ix02` (the 2 indexers): gateway login succeeds, but the root
     account's password has **expired** on the target host, forcing an interactive
     `passwd`-style prompt (`Changing password for user pas.tst.spk.root. Current
-    password:`) that `ssh.py` doesn't recognize — it just times out after 30s waiting
-    for a normal shell prompt. Also surfaced: `ix01`'s login banner showed "2 failed
-    login attempts since the last successful login" — i.e. failed attempts are being
-    counted, so repeated testing risks an account lockout.
-  - **Did not test prod** — hammering a possibly-broken/expiring root credential
-    against every production host risks lockout or a security alert; get the CyberArk
-    root credential fixed/rotated for test first, confirm clean, *then* test prod.
-  - Separate, safe code fix regardless of the credential issue: `ssh.py`'s `connect()`
-    should detect a forced password-change prompt and raise a clear
-    "root password has expired" error instead of an opaque 30s timeout; also, the
-    `except Exception` branch in `cmd_check_connectivity` never calls `conn.close()`
-    on a failed `connect()`, leaking the underlying socket until GC.
+    password:`). Also surfaced: `ix01`'s login banner showed "2 failed login attempts
+    since the last successful login" — i.e. failed attempts are being counted, so
+    repeated testing risks an account lockout.
+  - Test's root credential looks broadly broken/unmaintained compared to prod's (which
+    worked cleanly on 8/9 sampled hosts) — get it fixed/rotated via CyberArk, then retest.
+  - Fixed regardless (2026-07-03): `ssh.py`'s `connect()` now detects the forced
+    password-change prompt and raises a clear `PasswordExpiredError` instead of an
+    opaque 30s timeout, and no longer leaks the socket when the shell/su setup fails
+    after paramiko auth succeeds (`ssh.py` + `cli.py`'s `check-connectivity` loop).
 
 - [ ] **Full end-to-end test on test environment** — run a complete live wave against
   the `tst*` nodes using `Vulnerability_Plan_TEST_Mockup.xlsx` (dry-run first, then

@@ -283,11 +283,16 @@ repo** — type it only at the live terminal.
 
 - **StreamSets on `prdmilbbspkfw02`**: stop/start of StreamSets pipelines is a
   `manual_todo` placeholder pending the exact CLI commands.
-- **Root identity**: SSH connectivity tested for splunk identity only; root path through
-  PAS gateway is untested.
+- **Root identity**: verified 2026-07-03 — works across the prod fleet **except
+  `prdrmlbbspkdp01`** (rejected at the PAS gateway, looks like an isolated CyberArk
+  entitlement gap, not a code issue). **Root is currently broken in test** (all 7 hosts
+  fail: 5 outright auth failures, 2 indexers hit an expired PAS password mid-login) —
+  needs a CyberArk-side fix before further test-environment root testing. See `TODO.md`
+  for the full findings.
 - **Indexer S&R factor check**: post-restart search/replication factor wait-and-verify
   is deferred to v2.
 - **`send_mail` step**: currently a manual placeholder at the end of every Excel step;
   will be automated in a future version.
-- **PAS su password prompt regex**: tested against the test environment; may need
-  adjustment if the production gateway prompt differs.
+- **PAS su password prompt regex**: verified working against the real prod gateway
+  (root identity, 2026-07-03); the expired-password variant is now detected explicitly
+  (`PasswordExpiredError`) instead of timing out.

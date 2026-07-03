@@ -29,8 +29,24 @@ def test_indexer_uses_dedicated_splunk_bin():
 
 def test_forwarder_wraps_stop_start_with_crontab_handling():
     seq = get_role_sequences("fw01", NodeRole.FORWARDER)
-    assert seq.stop_per_node[0].name == "disable_crontab"
+    assert seq.stop_per_node[0].name == "backup_crontab"
+    assert seq.stop_per_node[1].name == "disable_crontab"
     assert seq.start_per_node[-1].name == "enable_crontab"
+
+
+def test_crontab_is_backed_up_before_deletion_everywhere():
+    """crontab -r is destructive: every sequence that deletes it must back it up first,
+    and the restore must read from the same file the backup writes."""
+    for factory_host, role in (("fw01", NodeRole.FORWARDER), (next(iter(HOST_OVERRIDES)), NodeRole.FORWARDER)):
+        seq = get_role_sequences(factory_host, role)
+        names = [a.name for a in seq.stop_per_node]
+        assert "backup_crontab" in names, factory_host
+        assert names.index("backup_crontab") < names.index("disable_crontab"), factory_host
+
+        backup = next(a for a in seq.stop_per_node if a.name == "backup_crontab")
+        restore = next(a for a in seq.start_per_node if a.name == "enable_crontab")
+        backup_file = backup.command.split(">")[1].strip()
+        assert backup_file in restore.command
 
 
 def test_host_override_replaces_role_sequence():

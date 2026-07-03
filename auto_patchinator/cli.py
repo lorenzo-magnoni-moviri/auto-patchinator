@@ -23,6 +23,8 @@ from auto_patchinator.runner.controller import RunController, print_plan_summary
 from auto_patchinator.state import store
 
 DEFAULT_TEAM_FILTERS = ["AOM Sky CSO", "AOM Splunk Broadband"]
+DEFAULT_INVENTORY_PATH = "inventory/hosts.yaml"
+PLANS_DIR = "plans"
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -30,7 +32,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparsers.add_parser("run", help="Resolve and walk through the patch plan")
-    run_parser.add_argument("--excel", required=True, help="Path to the wave Vulnerability_Plan .xlsx")
+    run_parser.add_argument(
+        "--excel",
+        default=None,
+        help=f"Path to the wave Vulnerability_Plan .xlsx. If omitted, looks for .xlsx files "
+             f"in '{PLANS_DIR}/' (then the current directory) and prompts you to pick one.",
+    )
     run_parser.add_argument("--plan-sheet", default="Plan")
     run_parser.add_argument("--host-sheet", default=HOST_SHEET_NAME,
                             help=f"Sheet name for host→group mapping (default: '{HOST_SHEET_NAME}')")
@@ -44,7 +51,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             f"Default: {DEFAULT_TEAM_FILTERS}"
         ),
     )
-    run_parser.add_argument("--inventory", required=True, help="Path to hosts.yaml")
+    run_parser.add_argument(
+        "--inventory",
+        default=None,
+        help=f"Path to hosts.yaml (default: '{DEFAULT_INVENTORY_PATH}')",
+    )
     run_parser.add_argument("--environment", default="prod", choices=["prod", "test"],
                             help="Which environment to target (default: prod)")
     run_parser.add_argument("--state-dir", default="state")
@@ -72,7 +83,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "check-connectivity",
         help="SSH into every host in the inventory and verify the su step works",
     )
-    conn_parser.add_argument("--inventory", required=True, help="Path to hosts.yaml")
+    conn_parser.add_argument(
+        "--inventory",
+        default=None,
+        help=f"Path to hosts.yaml (default: '{DEFAULT_INVENTORY_PATH}')",
+    )
     conn_parser.add_argument("--environment", default="prod", choices=["prod", "test"],
                              help="Which environment to target (default: prod)")
     conn_parser.add_argument(
@@ -99,6 +114,55 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _resolve_inventory_path(explicit: str | None) -> str:
+    """Fall back to DEFAULT_INVENTORY_PATH when --inventory is omitted."""
+    path = explicit or DEFAULT_INVENTORY_PATH
+    if not Path(path).exists():
+        if explicit:
+            raise SystemExit(f"Inventory file not found: {path}")
+        raise SystemExit(
+            f"No --inventory given and the default '{DEFAULT_INVENTORY_PATH}' does not "
+            f"exist. Pass --inventory explicitly, or create '{DEFAULT_INVENTORY_PATH}' "
+            "(copy from inventory/hosts.example.yaml)."
+        )
+    return path
+
+
+def _discover_excel_candidates() -> list[Path]:
+    """Look for .xlsx files, preferring the dedicated PLANS_DIR over the current directory."""
+    for directory in (Path(PLANS_DIR), Path(".")):
+        if directory.is_dir():
+            candidates = sorted(
+                directory.glob("*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True
+            )
+            if candidates:
+                return candidates
+    return []
+
+
+def _prompt_for_excel_path() -> str:
+    """Interactively resolve --excel when it wasn't given on the command line."""
+    candidates = _discover_excel_candidates()
+    if not candidates:
+        raw = input(
+            f"No --excel given and no .xlsx files found in '{PLANS_DIR}/' or the current "
+            "directory. Enter a path to the wave Excel: "
+        ).strip()
+        if not raw:
+            raise SystemExit("No Excel file provided.")
+        return raw
+
+    print(f"No --excel given. Found {len(candidates)} .xlsx file(s), most recent first:")
+    for i, candidate in enumerate(candidates, start=1):
+        print(f"  [{i}] {candidate}")
+    raw = input("Pick a number, or type a path (blank to cancel): ").strip()
+    if not raw:
+        raise SystemExit("No Excel file selected.")
+    if raw.isdigit() and 1 <= int(raw) <= len(candidates):
+        return str(candidates[int(raw) - 1])
+    return raw
+
+
 def _resolve_pas_gateway(cli_value: str | None, inventory) -> tuple[str | None, int]:
     """Pick the gateway from --pas-gateway or the inventory; parse optional ':port'."""
     value = cli_value or inventory.pas_gateway
@@ -120,6 +184,9 @@ def _load_team_steps(excel: str, plan_sheet: str, team_filter: list[str]):
 
 
 def cmd_run(args: argparse.Namespace) -> None:
+    args.excel = args.excel or _prompt_for_excel_path()
+    args.inventory = _resolve_inventory_path(args.inventory)
+
     mapped = _load_team_steps(args.excel, args.plan_sheet, args.team_filter)
     ordered_steps = resolve_order(mapped)
     inventory = load_inventory(args.inventory, args.environment)
@@ -157,6 +224,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     else:
         state = _new_run_state(args, run_plan)
     store.save(state, args.state_dir)
+    store.prune_other_states(args.state_dir, state.run_id)
 
     log_path = setup_run_logging(args.logs_dir, state.run_id)
     print(f"Logging to {log_path}")
@@ -214,6 +282,7 @@ def _extract_whoami(raw: str) -> str:
 
 
 def cmd_check_connectivity(args: argparse.Namespace) -> None:
+    args.inventory = _resolve_inventory_path(args.inventory)
     log_path = setup_run_logging(args.logs_dir, f"check-connectivity-{datetime.now():%Y%m%dT%H%M%S}")
     print(f"Logging to {log_path}")
     inventory = load_inventory(args.inventory, args.environment)

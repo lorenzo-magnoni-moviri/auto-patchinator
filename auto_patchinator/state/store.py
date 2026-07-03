@@ -60,6 +60,27 @@ def delete_run(run_id: str, directory: str | Path) -> None:
     path.unlink(missing_ok=True)
 
 
+def prune_other_states(directory: str | Path, keep_run_id: str) -> list[Path]:
+    """Delete every run-*.json in directory except keep_run_id's.
+
+    Only one run's state is kept on disk at a time - stale state from prior completed
+    or abandoned runs is removed once a run is active. Returns what was deleted.
+    """
+    directory = Path(directory)
+    if not directory.exists():
+        return []
+    keep_path = run_state_path(directory, keep_run_id)
+    deleted = []
+    for path in directory.glob("run-*.json"):
+        if path != keep_path:
+            try:
+                path.unlink()
+                deleted.append(path)
+            except OSError:
+                pass
+    return deleted
+
+
 def find_incomplete_run(directory: str | Path) -> Path | None:
     directory = Path(directory)
     if not directory.exists():

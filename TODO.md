@@ -4,6 +4,44 @@ Open items, roughly in priority order.
 
 ---
 
+## Recently done
+
+- [x] Unit test suite (`tests/`, 61 tests) covering excel parsing, action mapping,
+  dependency ordering, wave/host mapping, role sequences, inventory, PAS login string
+  building, and state persistence/resume. Run with `python -m pytest` (install with
+  `pip install -e ".[test]"`).
+- [x] Auto-detect PAS gateway from inventory — `pas_gateway` in `hosts.yaml` is now the
+  default; `--pas-gateway` only needed to override.
+- [x] `run` defaults to LIVE execution; `--dry-run` is the opt-in simulate-only flag
+  (previously the reverse).
+- [x] Three per-step operator modes: automatic (`a`/`A`, or `--full-auto-mode`),
+  task-by-task (`t`), and manual guide (`m` — prints each task's command/host/user/why
+  one at a time, nothing executed, no ssh commands since the team connects via WinSSH).
+- [x] Failures now show in red with a dedicated retry menu instead of silently
+  re-prompting; automatic mode shows an animated "..." while an action runs.
+- [x] Full DEBUG audit logging to `logs/run-<id>.log` (SSH send/receive, operator
+  choices, passwords redacted).
+- [x] Fixed: crontab was deleted with no backup taken first (see "Verify
+  `backup_crontab`..." below for the remaining verification step).
+- [x] **Default inventory path** — `--inventory` now defaults to `inventory/hosts.yaml`
+  if omitted; a clear `SystemExit` error names the expected path if it's missing.
+- [x] **Interactive Excel prompt** — if `--excel` is omitted, the tool looks for `.xlsx`
+  files in a dedicated `plans/` directory first (most recent first), falls back to the
+  current directory, and lets the operator pick a number or type a path; prompts for a
+  path directly if none are found anywhere.
+- [x] **`logs/` rotation** — `logging_setup.prune_old_logs` keeps only the 3 most
+  recently modified `*.log` files, called automatically every time a run sets up
+  logging.
+- [x] **State pruning** — `store.prune_other_states` deletes every other `run-*.json`
+  once the active run's state is saved, so `state/` only ever holds the current run.
+- [x] **Splunk API credentials (scaffolding only)** — `SPLUNK_API_TOKEN` /
+  `SPLUNK_API_USER` / `SPLUNK_API_PASSWORD` added to `.env.example` and loadable via
+  `credentials.load_splunk_api_credentials()`. Nothing consumes them yet — see the
+  StreamSets/captain-transfer/cluster-status items below, which now depend on this
+  instead of needing their own credential plumbing.
+
+---
+
 ## Must-do before first production live run
 
 - [ ] **Verify PAS su flow on prod nodes** — the PTY marker protocol and sudo/su
@@ -19,27 +57,22 @@ Open items, roughly in priority order.
 - [ ] **Full end-to-end test on test environment** — run a complete live wave against
   the `tst*` nodes using `Vulnerability_Plan_TEST_Mockup.xlsx` (dry-run first, then
   live) to validate the full pipeline — Excel parsing, SSH sessions, action sequences,
-  state persistence, resume, and report — before touching production.
+  state persistence, resume, and report — before touching production. First live
+  attempt this session surfaced a missing `pas_gateway` config and the crontab-backup
+  bug below (both fixed); a full run still hasn't completed without operator
+  intervention.
+
+- [ ] **Verify `backup_crontab` restores correctly on a real forwarder** — fixed a bug
+  this session where `disable_crontab` deleted the splunk user's crontab with nothing
+  backing it up first (`enable_crontab` restored from a file that was never written).
+  `backup_crontab` (`crontab -l > /home/splunk/crontab.backup`) now runs first on both
+  the forwarder role and the `prdmilbbspkfw02` override, and it's unit-tested that the
+  sequencing and filename match — but not yet verified against a real node's actual
+  crontab.
 
 ---
 
 ## Short-term improvements
-
-- [ ] **Default inventory path** — avoid having to type `--inventory inventory/hosts.yaml`
-  every run. Fall back to `inventory/hosts.yaml` relative to the working directory if
-  `--inventory` is omitted, and error clearly if the file is not found.
-
-- [ ] **Interactive Excel prompt** — if `--excel` is not provided on the command line,
-  instead of exiting with a usage error, prompt the operator to enter a file path
-  (or pick from `.xlsx` files found in the current directory). Useful during live runs
-  where the operator may not remember the exact filename.
-
-- [ ] **Splunk API credentials** — several upcoming automations (captain transfer,
-  cluster status checks) require a Splunk admin token or username/password. Add
-  `SPLUNK_API_USER` and `SPLUNK_API_PASSWORD` (or a token `SPLUNK_API_TOKEN`) to
-  `.env.example` and load them via the existing `credentials.py` / dotenv mechanism.
-  **Never hardcode these values** — in particular, the `bootstrap shcluster-captain`
-  admin password must never appear in source or git history.
 
 - [ ] **Automate StreamSets stop/start for `prdmilbbspkfw02`** — replace the current
   `manual_todo` placeholders in `actions/sequences.py → _prdmilbbspkfw02_sequences()`
@@ -49,18 +82,20 @@ Open items, roughly in priority order.
     `RUNNING` and metrics confirm data is flowing again.
   - Temporarily scale the ODP Preprocessing pipeline worker threads from 5 → 8 before
     restart (to absorb the backlog) and revert to 5 once throughput normalises.
-  StreamSets API base URL and credentials should come from `.env`.
+  StreamSets API base URL and credentials should come from `.env` (a separate var, not
+  the Splunk API credentials above).
 
 - [ ] **Automate SH captain transfer / revert** — replace the
   `transfer_captain_static` and `revert_captain_dynamic` manual steps with Splunk REST
-  API calls (requires the Splunk API credentials above):
+  API calls, using `credentials.load_splunk_api_credentials()` (now available, see
+  "Recently done"):
   - Transfer: `POST /services/shcluster/captain/transfer` on the current captain, or
     `edit shcluster-config -mode captain` on the target.
   - Revert: re-enable dynamic election on all members, then bootstrap from the captain.
   Keep both as manual fallbacks if the API call fails.
 
 - [ ] **Cluster status validation via Splunk API** — add automated checks at key
-  points in the sequence using the Splunk REST API (requires API credentials above):
+  points in the sequence using the Splunk REST API (via `load_splunk_api_credentials()`):
   - **Indexer cluster**: after each indexer restarts, poll
     `GET /services/cluster/master/peers` until the peer is `Up` and S&R factor is met.
   - **Search head cluster**: after each SH restarts, poll
@@ -74,8 +109,8 @@ Open items, roughly in priority order.
   step or globally) and change the action kind from `MANUAL` to `PLAIN`.
 
 - [ ] **Indexer S&R factor check** — basic post-restart search/replication factor
-  verification (blocked on the Splunk API credentials above). Deferred to v2 but
-  dependency is now the API auth item, not implementation complexity.
+  verification, via `load_splunk_api_credentials()`. Deferred to v2 but the credential
+  dependency is now resolved, not implementation complexity.
 
 - [ ] **`waves/` directory cleanup** — `waves/wave7.yaml` is a leftover from the old
   manual group→host YAML approach (removed in favour of reading directly from the Excel
@@ -85,20 +120,29 @@ Open items, roughly in priority order.
 
 ## Nice-to-have / v2
 
-- [ ] **Auto-detect PAS gateway from inventory** — `hosts.yaml` already has
-  `pas_gateway: pas.sky.local`; wire it into `cli.py` as the default so `--pas-gateway`
-  is only needed to override it.
+- [ ] **Containerize the app** — package the tool as a Docker image so it can run
+  without a local Python/venv setup. Things to work out:
+  - Base image with Python 3.10+ and the pinned deps (openpyxl, PyYAML, paramiko,
+    python-dotenv) installed via `pip install .`.
+  - The tool is *interactive* (prompts throughout a run) — needs `docker run -it` and
+    a documented invocation, not a fire-and-forget entrypoint.
+  - `inventory/`, `plans/`, `state/`, `logs/`, `reports/`, and `.env` all need to be
+    bind-mounted volumes (or a single mounted project dir) so they persist across
+    container runs and stay off the image — none of that sensitive data belongs baked
+    into a layer.
+  - Credentials (`AP_USERNAME`/`AP_PASSWORD`, future `SPLUNK_API_*`) should be passed
+    via `--env-file .env` or `-e`, never `ARG`/`ENV` in the Dockerfile.
+  - Decide whether `check-connectivity` and `run` need real outbound SSH from inside
+    the container (they do) — confirm the corporate network/VPN path to the PAS
+    gateway is reachable from wherever the container runs.
 
 - [ ] **`--environment` in report** — the markdown report (`reports/report.py`) does
   not currently record which environment was targeted. Add it to the report header.
 
-- [ ] **GitHub Actions CI** — run `auto-patchinator run --excel <mockup.xlsx>
-  --inventory inventory/hosts.example.yaml` in dry-run mode on every push to catch
-  import errors and plan-resolution regressions without needing a test suite.
-
-- [ ] **Unit tests** — at minimum: `excel_parser`, `action_mapping`, `dependency`,
-  `wave_mapping`, `run_plan`. The SSH layer is harder to test without a real gateway;
-  `DryRunConnection` already handles that for integration testing.
+- [ ] **GitHub Actions CI** — run `python -m pytest` (unit tests now exist under
+  `tests/`) plus `auto-patchinator run --excel <mockup.xlsx> --inventory
+  inventory/hosts.example.yaml --dry-run` on every push, to catch both logic
+  regressions and plan-resolution/import errors.
 
 - [ ] **Parallel host actions within a group** — currently hosts within one Excel group
   are processed sequentially. For groups with multiple hosts (e.g. all 5 Roma SHs in

@@ -1,16 +1,20 @@
 """Interactive step navigator: walks the resolved RunStepPlan list, executes/records each
-action, and lets the operator drive each major step in one of two modes:
+action, and lets the operator drive each major step in one of three modes:
 
   - automatic:    every action runs back to back, one line per action
                   ("stopping splunk ... DONE"); pauses only for manual
                   confirmations (press ENTER) and failures (retry menu).
   - task-by-task: the operator confirms every action before it runs
                   (run / mark-manual / skip / back / jump / quit).
+  - manual guide: nothing is executed - prints the full ordered list of commands
+                  with, per action, where to run it, as which user (including the
+                  exact PAS login string and su command), and why. The operator
+                  performs everything by hand and then records the result.
 
 The mode is asked at the start of every step ([A] applies automatic to all remaining
 steps; the --full-auto-mode CLI flag skips the question entirely). Failures show in red
-with the command output and a retry-focused menu, identical in both modes. All progress
-is persisted after every transition so a crash/Ctrl-C can be resumed later.
+with the command output and a retry-focused menu, identical in all executing modes. All
+progress is persisted after every transition so a crash/Ctrl-C can be resumed later.
 """
 from __future__ import annotations
 
@@ -19,8 +23,9 @@ import re
 import time
 from typing import Callable, Protocol
 
-from auto_patchinator.actions.types import Action, ActionKind
+from auto_patchinator.actions.types import Action, ActionKind, Identity
 from auto_patchinator.config.inventory import Inventory
+from auto_patchinator.executor.ssh import login_username, su_command
 from auto_patchinator.plan.run_plan import RunStepPlan
 from auto_patchinator.state import store
 from auto_patchinator.state.models import (
@@ -63,6 +68,34 @@ _AUTO_LABELS = {
 }
 
 _AUTO_LABEL_WIDTH = 50  # pad so the DONE/FAILED column lines up
+
+# Plain-language explanations shown by the manual guide ("why" line per action).
+_GUIDE_DESCRIPTIONS = {
+    "stop_splunk": "Stop the Splunk process cleanly before the OS is patched.",
+    "start_splunk": "Start Splunk again now that the OS has been patched.",
+    "backup_systemd_unit": (
+        "Save a copy of the hand-edited systemd unit file - 'enable boot-start' later "
+        "regenerates it from a template and would lose the edits."
+    ),
+    "disable_boot_start": (
+        "Unregister Splunk from systemd boot so the patch reboot comes back up without Splunk."
+    ),
+    "enable_boot_start": (
+        "Re-register Splunk with systemd. This REGENERATES the unit file from a template - "
+        "the next action restores the edited copy over it."
+    ),
+    "restore_systemd_unit": (
+        "Overwrite the regenerated unit file with the backed-up edited copy. Overwrite in "
+        "place (cat >) - do NOT rm+cp, replacing the inode breaks systemd's cached state."
+    ),
+    "daemon_reload": "Make systemd re-read the restored unit file.",
+    "clean_kvstore": "Clear the local KV store so it resyncs cleanly from the cluster.",
+    "disable_crontab": (
+        "Delete the splunk user's crontab so no scheduled jobs fire mid-patching. The "
+        "crontab command is aliased to 'crontab -i': answer 'yes' at the confirmation."
+    ),
+    "enable_crontab": "Restore the crontab from the /home/splunk/crontab.backup copy.",
+}
 
 
 def _auto_label(action: Action) -> str:
@@ -119,6 +152,7 @@ class RunController:
         inventory: Inventory,
         dry_run: bool = False,
         full_auto: bool = False,
+        gateway: tuple[str | None, int] = (None, 22),
     ) -> None:
         self._plans = {p.excel_step: p for p in run_plan}
         self._order = [p.excel_step for p in run_plan]
@@ -128,6 +162,7 @@ class RunController:
         self._inventory = inventory
         self._dry_run = dry_run
         self._full_auto = full_auto
+        self._gateway = gateway
         self._jump_target_index: int | None = None
 
     def run(self) -> None:
@@ -200,6 +235,21 @@ class RunController:
             return "quit"
         _log.info("step %s run mode: %s", excel_step, mode)
 
+        if mode == "manual":
+            self._print_manual_guide(pending)
+            choice = self._guide_followup()
+            _log.info("manual guide follow-up for step %s: %r", excel_step, choice)
+            if choice == "q":
+                return "quit"
+            if choice == "d":
+                for _, _, action_state in pending:
+                    action_state.status = ActionStatus.SUCCESS
+                    action_state.output = "confirmed done manually by operator (manual guide)"
+                self._save()
+                print(green(f"All {len(pending)} action(s) marked as done."))
+                return "next"
+            mode = "task"  # choice == "t": record them one by one
+
         for scope, action, action_state in pending:
             if action_state.status in (ActionStatus.SUCCESS, ActionStatus.SKIPPED):
                 continue  # may have been resolved by a jump/back replay
@@ -217,6 +267,8 @@ class RunController:
         print("                          manual confirmations and failures")
         print("      [A] automatic for ALL remaining steps (stop asking)")
         print("      [t] task-by-task  - confirm every action before it runs")
+        print("      [m] manual guide  - execute NOTHING: print every command with where to")
+        print("                          run it, as which user, and why - you do it all by hand")
         print("      [q] quit")
         while True:
             choice = input("    > ").strip()
@@ -227,9 +279,99 @@ class RunController:
                 return "auto"
             if choice.lower() == "t":
                 return "task"
+            if choice.lower() == "m":
+                return "manual"
             if choice.lower() == "q":
                 return "quit"
-            print("    Please choose one of: a, A, t, q")
+            print("    Please choose one of: a, A, t, m, q")
+
+    # ------------------------------------------------------------------
+    # Manual guide mode
+    # ------------------------------------------------------------------
+
+    def _ssh_hint(self, hostname: str, identity: Identity) -> str:
+        """The exact ssh command + su step to reach <identity> on <hostname> by hand."""
+        host = self._inventory.get(hostname)
+        gw_host, gw_port = self._gateway
+        if gw_host:
+            login = login_username(
+                "<your-user>", identity, hostname,
+                pas_domain_suffix=host.effective_pas_domain_suffix(self._inventory.pas_domain_suffix),
+                pas_port=host.effective_pas_port(self._inventory.pas_port),
+                pas_suffixes=self._inventory.pas_suffixes,
+            )
+            port = f" -p {gw_port}" if gw_port != 22 else ""
+            ssh = f"ssh{port} '{login}'@{gw_host}"
+        else:
+            ssh = f"ssh <your-user>@{hostname}  (no PAS gateway configured)"
+        if identity == Identity.SPLUNK and host.splunk_su_command:
+            su = host.splunk_su_command
+        else:
+            su = su_command(identity, host.role)
+        return f"{ssh}   then: {su}"
+
+    @staticmethod
+    def _guide_what(action: Action) -> list[str]:
+        if action.kind == ActionKind.PLAIN:
+            return [action.command]
+        if action.kind == ActionKind.INTERACTIVE:
+            lines = []
+            for step in action.script:
+                expect = f"   (wait for: {step.expect!r})" if step.expect else ""
+                lines.append(f"{step.send}{expect}")
+            return lines
+        if action.kind == ActionKind.WAIT:
+            return [f"wait {action.wait_seconds}s - {action.note}"]
+        return (action.note or action.name).splitlines()
+
+    def _print_manual_guide(self, pending: list) -> None:
+        print(yellow("\n    MANUAL GUIDE - nothing will be executed. Do the following by hand, in order:"))
+        by_scope: dict[str, list[Action]] = {}
+        for scope, action, _ in pending:
+            by_scope.setdefault(scope, []).append(action)
+
+        number = 0
+        for scope, actions in by_scope.items():
+            if scope in (PRE_GROUP_SCOPE, POST_GROUP_SCOPE):
+                when = "before" if scope == PRE_GROUP_SCOPE else "after"
+                print(bold(f"\n    Once for the whole group ({when} the per-host work):"))
+            else:
+                host = self._inventory.get(scope)
+                print(bold(f"\n    On host {scope} ({host.role.value}, site {host.site}):"))
+                identities = dict.fromkeys(a.identity for a in actions if a.identity is not None)
+                for identity in identities:
+                    forced = " [CyberArk GUI only - no SSH]" if host.is_manual_only(identity) else ""
+                    print(f"      connect as {identity.value}{yellow(forced)}:")
+                    print(f"        {self._ssh_hint(scope, identity)}")
+
+            for action in actions:
+                number += 1
+                who = action.identity.value if action.identity else "operator"
+                kind_note = "  (manual step)" if action.kind == ActionKind.MANUAL else ""
+                print(f"\n      {number}. {action.name}  [user: {who}]{kind_note}")
+                what = self._guide_what(action)
+                print(f"         run : {what[0]}")
+                for extra in what[1:]:
+                    print(f"               {extra}")
+                why = _GUIDE_DESCRIPTIONS.get(action.name) or (
+                    action.note if action.kind != ActionKind.MANUAL else None
+                )
+                if why:
+                    print(f"         why : {why}")
+        print()
+
+    @staticmethod
+    def _guide_followup() -> str:
+        prompt = (
+            "    When you have performed the steps above:\n"
+            "      [d] mark ALL of them as done  [t] record them one by one (task-by-task)  [q] quit\n"
+            "    > "
+        )
+        while True:
+            choice = input(prompt).strip().lower()
+            if choice in ("d", "t", "q"):
+                return choice
+            print("    Please choose one of: d, t, q")
 
     # ------------------------------------------------------------------
     # Automatic mode

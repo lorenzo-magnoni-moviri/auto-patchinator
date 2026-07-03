@@ -189,6 +189,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     controller = RunController(
         run_plan, state, args.state_dir, connection_factory, inventory,
         dry_run=args.dry_run, full_auto=args.full_auto_mode,
+        gateway=(gateway_host, gateway_port),
     )
     controller.run()
 

@@ -168,18 +168,33 @@ At the start of each Excel step the operator chooses how to run it:
 | `a` | **Automatic** — actions run back to back, one line each; pauses only for manual steps and failures |
 | `A` | Automatic for **all remaining steps** |
 | `t` | **Task-by-task** — confirm each action before it runs |
+| `m` | **Manual guide** — executes **nothing**: prints every command with the host to run it on, the exact PAS ssh login + su command for the right user, and an explanation of why; you do it all by hand, then mark everything done (or record it action by action) |
 
 Within task-by-task mode each action offers:
 
-`[r]un` / `[m]ark done manually` / `[s]kip` / `[b]ack` / `[j]ump <step>` / `[q]uit`
+`[r]un` / `[d] mark done manually` / `[s]kip` / `[b]ack` / `[j]ump <step>` / `[q]uit`
 
-Failures (in either mode) show the command output in red and offer:
+Failures (in any executing mode) show the command output in red and offer:
 
-`[r]etry` / `[m]ark done manually` / `[s]kip` / `[q]uit`
+`[r]etry` / `[d] mark done manually` / `[s]kip` / `[q]uit`
 
 **Resuming an interrupted run:** if a run is interrupted (Ctrl-C, network drop, crash),
 rerunning the same command detects the incomplete state file under `state/` and offers
 to resume from where it left off.
+
+---
+
+## Tests
+
+```bash
+pip install -e ".[test]"
+python -m pytest
+```
+
+Unit tests cover the whole plan pipeline (Excel parsing, team-step mapping, dependency
+ordering, host mapping, role sequences, inventory, PAS login strings, state persistence)
+plus the controller's manual-guide mode. Run them before merging any change; dry-run mode
+remains the way to exercise the interactive flow end to end.
 
 ---
 

@@ -25,7 +25,13 @@ auto-patchinator run ... --dry-run
 auto-patchinator check-connectivity --inventory inventory/hosts.yaml --pas-gateway <gateway-host>
 ```
 
-There is no test suite and no linter configured. Dry-run mode is the way to exercise the full pipeline end to end.
+```bash
+# Tests (pytest; install test deps with: pip install -e ".[test]")
+python -m pytest            # whole suite
+python -m pytest tests/test_run_plan.py -k captain   # single file / test
+```
+
+No linter is configured. The unit tests cover the plan pipeline and pure helpers; the interactive flow and SSH layer are exercised via dry-run mode end to end.
 
 ## Architecture
 
@@ -36,7 +42,7 @@ Data flows through a strict pipeline, assembled in `cli.py:cmd_run`:
 3. **`plan/dependency.py`** — Kahn's-algorithm ordering. Dependencies pointing outside the team's own step set (other teams' steps) become `external_dependencies`, which surface as a manual "confirm the other team finished" action at run time.
 4. **`plan/wave_mapping.py` + `config/inventory.py`** — `wave_mapping.py` reads the group→hostname mapping directly from the Excel's "List Host NO IT" sheet and cross-references it with the static inventory (`hosts.yaml`) to filter to our team's hosts. The inventory (hostname→role/site/manual-identity exceptions) doesn't change month to month.
 5. **`plan/run_plan.py`** — combines the above with `actions/sequences.py` into `RunStepPlan`s: `pre_group_actions` / `per_host_actions` / `post_group_actions`. Group-level actions are deduped per role (or per overridden host), not by sequence equality.
-6. **`runner/controller.py`** — the interactive loop. Each step is run in one of two operator-chosen modes (asked per step; `A` or `--full-auto-mode` locks in automatic): *automatic* (one line per action, pauses only on manual confirmations and failures) or *task-by-task* (run / mark-done-manually / skip / back / jump / quit per action). Failures show a red block + retry menu in both modes (`term.py` has the ANSI color helpers, auto-disabled when not a tty). Persists state after every transition.
+6. **`runner/controller.py`** — the interactive loop. Each step is run in one of three operator-chosen modes (asked per step; `A` or `--full-auto-mode` locks in automatic): *automatic* (one line per action, pauses only on manual confirmations and failures), *task-by-task* (run / mark-done-manually / skip / back / jump / quit per action), or *manual guide* (`m`: executes nothing — prints every command with host, user, exact PAS ssh/su line, and rationale, then the operator marks the work done). Failures show a red block + retry menu in all executing modes (`term.py` has the ANSI color helpers, auto-disabled when not a tty). Persists state after every transition.
 7. **`state/`** — JSON run state under `state/`; on startup an incomplete run is detected and offered for resume. **`reports/report.py`** writes a markdown report at the end.
 
 ### Action model (`actions/`)

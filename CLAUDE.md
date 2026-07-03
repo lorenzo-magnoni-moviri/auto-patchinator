@@ -14,8 +14,9 @@ source .venv/bin/activate
 pip install -e .
 
 # Run - LIVE by default (real SSH, prompts for credentials, shows MODE banner).
-# Group->host mapping is read directly from the Excel's 'List Host NO IT' sheet,
-# cross-referenced against the inventory to filter to our team's hosts.
+# --excel, --inventory, --pas-gateway are all optional (see cli.py: _prompt_for_excel_path,
+# _resolve_inventory_path, _resolve_pas_gateway). Group->host mapping is read directly from
+# the Excel's 'List Host NO IT' sheet, cross-referenced against the inventory.
 auto-patchinator run --excel <plan.xlsx> --inventory inventory/hosts.yaml --pas-gateway <gateway-host>
 
 # Simulate only (no SSH) - for testing plans end to end
@@ -43,7 +44,7 @@ Data flows through a strict pipeline, assembled in `cli.py:cmd_run`:
 4. **`plan/wave_mapping.py` + `config/inventory.py`** — `wave_mapping.py` reads the group→hostname mapping directly from the Excel's "List Host NO IT" sheet and cross-references it with the static inventory (`hosts.yaml`) to filter to our team's hosts. The inventory (hostname→role/site/manual-identity exceptions) doesn't change month to month.
 5. **`plan/run_plan.py`** — combines the above with `actions/sequences.py` into `RunStepPlan`s: `pre_group_actions` / `per_host_actions` / `post_group_actions`. Group-level actions are deduped per role (or per overridden host), not by sequence equality.
 6. **`runner/controller.py`** — the interactive loop. Each step is run in one of three operator-chosen modes (asked per step; `A` or `--full-auto-mode` locks in automatic): *automatic* (one line per action, pauses only on manual confirmations and failures), *task-by-task* (run / mark-done-manually / skip / back / jump / quit per action), or *manual guide* (`m`: executes nothing — presents one task at a time with command, host, user + su command, and rationale; ENTER confirms it done, `l` lists all tasks, no ssh commands printed since the team connects via WinSSH). Failures show a red block + retry menu in all executing modes (`term.py` has the ANSI color helpers, auto-disabled when not a tty). Persists state after every transition.
-7. **`state/`** — JSON run state under `state/`; on startup an incomplete run is detected and offered for resume. **`reports/report.py`** writes a markdown report at the end.
+7. **`state/`** — JSON run state under `state/`; on startup an incomplete run is detected and offered for resume. Only one run's state file is kept on disk at a time (`store.prune_other_states`, called from `cli.py` right after the active run's state is decided/saved). **`reports/report.py`** writes a markdown report at the end (not pruned).
 
 ### Action model (`actions/`)
 
@@ -54,11 +55,11 @@ Data flows through a strict pipeline, assembled in `cli.py:cmd_run`:
 
 ### SSH layer (`executor/ssh.py`)
 
-Everything runs in one persistent PTY shell session per (host, identity) — not one-shot `exec_command` — because the `sudo su -` step and some commands prompt interactively. The PAS gateway login encodes the target identity in the username (`<user>@pas.prd.spk[.root]@<host>`); after login it still `su`s into splunk/root with the same password. Command completion/exit codes are detected via a `PS1` marker + `AP_EXIT_CODE` echo protocol. `DryRunConnection` implements the same interface and is what `--dry-run` runs use. Every run appends a DEBUG audit log (actions, operator choices, raw SSH sends/reads with passwords redacted) to `logs/run-<run_id>.log` via `logging_setup.py`.
+Everything runs in one persistent PTY shell session per (host, identity) — not one-shot `exec_command` — because the `sudo su -` step and some commands prompt interactively. The PAS gateway login encodes the target identity in the username (`<user>@pas.prd.spk[.root]@<host>`); after login it still `su`s into splunk/root with the same password. Command completion/exit codes are detected via a `PS1` marker + `AP_EXIT_CODE` echo protocol. `DryRunConnection` implements the same interface and is what `--dry-run` runs use. Every run appends a DEBUG audit log (actions, operator choices, raw SSH sends/reads with passwords redacted) to `logs/run-<run_id>.log` via `logging_setup.py`, which also prunes `logs/` down to the 3 most recently modified files after each setup call.
 
 ## Invariants and cautions
 
-- **Never hardcode the Splunk admin password** (used by `bootstrap shcluster-captain -auth admin:<password>`) anywhere in this repo. Search-head-captain transfer/revert are *intentionally* manual steps — don't automate them (cluster-wide scope, host choice, and credential handling are why).
+- **Never hardcode the Splunk admin password** (used by `bootstrap shcluster-captain -auth admin:<password>`) anywhere in this repo. Search-head-captain transfer/revert are *intentionally* manual steps — don't automate them (cluster-wide scope, host choice, and credential handling are why). Same rule for the reserved `SPLUNK_API_TOKEN`/`SPLUNK_API_USER`/`SPLUNK_API_PASSWORD` env vars (`credentials.py:load_splunk_api_credentials`) once something consumes them — `.env` only, never source or commit history.
 - `*.xlsx` files are gitignored because the plan contains sensitive data; so are `state/` and `reports/`. Don't commit or echo their contents.
 - The start sequence order is deliberate: `enable boot-start` regenerates the systemd unit from a template, so it must be enable → restore the edited unit copy (`cat >`, not rm+cp — replacing the inode breaks systemd's cached state) → daemon-reload → start.
 - The sudo/su password-prompt regex and PTY marker protocol in `ssh.py` are untested against the real PAS gateway (flagged in README) — expect that login flow to need adjustment with lab access.

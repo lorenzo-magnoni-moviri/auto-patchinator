@@ -39,6 +39,10 @@ chmod 600 .env
 
 `.env` is gitignored. **Never commit credentials.**
 
+`.env.example` also has placeholders for `SPLUNK_API_TOKEN` / `SPLUNK_API_USER` /
+`SPLUNK_API_PASSWORD` — reserved for future automations (captain transfer, cluster
+status polling; see `TODO.md`). Nothing in the tool reads them yet.
+
 ---
 
 ## Files you maintain
@@ -48,6 +52,9 @@ chmod 600 .env
 Single source of truth for all nodes — both production and test. Does not change
 month to month. Contains per-host role, site, PAS connection details, and SSH
 quirks. Copy from `inventory/hosts.example.yaml` to get started.
+
+`--inventory` defaults to `inventory/hosts.yaml` if omitted — pass it explicitly only
+to use a different file.
 
 Key top-level fields:
 
@@ -87,46 +94,46 @@ The tool reads two sheets from it automatically:
 
 No manual YAML mapping is needed between waves.
 
+**`--excel` is optional.** Drop each month's file into a `plans/` directory at the
+project root (create it if it doesn't exist — it's gitignored like any other `.xlsx`).
+If `--excel` is omitted, the tool lists `.xlsx` files there, most recent first, and lets
+you pick one by number or type a path; if `plans/` is empty or missing, it falls back to
+the current directory, and if that's empty too, it just prompts for a path.
+
 ---
 
 ## Commands
 
-### Dry-run (default — no SSH, safe to run any time)
+`--excel`, `--inventory`, and `--pas-gateway` are all optional — see "Files you
+maintain" above for the fallback rules (plans/ directory picker, default
+`inventory/hosts.yaml`, `pas_gateway` from the inventory YAML).
+
+### Live run (the default)
 
 ```bash
-auto-patchinator run \
-  --excel Vulnerability_Plan_WaveN.xlsx \
-  --inventory inventory/hosts.yaml
+auto-patchinator run --pas-gateway pas.sky.local
 ```
 
-Prints the full resolved plan and simulates every action. Use this to verify the plan
-before a live run.
+No `.xlsx` files found where the tool looks? You'll be prompted for a path. Prompts once
+for credentials (or reads from `.env`), shows a `PRODUCTION ENVIRONMENT` banner, asks
+for confirmation, then walks through the plan interactively.
 
-### Live run
+### Dry-run (simulate only — no SSH, safe to run any time)
 
 ```bash
-auto-patchinator run \
-  --excel Vulnerability_Plan_WaveN.xlsx \
-  --inventory inventory/hosts.yaml \
-  --live \
-  --pas-gateway pas.sky.local
+auto-patchinator run --dry-run
 ```
 
-Prompts once for credentials (or reads from `.env`), shows a `PRODUCTION ENVIRONMENT`
-banner, asks for confirmation, then walks through the plan interactively.
+Prints the full resolved plan and simulates every action, no credentials needed. Use
+this to verify a plan (or a new wave's Excel) before a live run.
 
 ### Test environment
 
 ```bash
-auto-patchinator run \
-  --excel Vulnerability_Plan_WaveN.xlsx \
-  --inventory inventory/hosts.yaml \
-  --environment test \
-  --live \
-  --pas-gateway pas.sky.local
+auto-patchinator run --environment test --pas-gateway pas.sky.local
 ```
 
-Filters to `tst*` nodes and uses `pas.tst.spk` PAS suffix automatically.
+Filters to `tst*` nodes and uses the `test` PAS suffixes from `hosts.yaml` automatically.
 
 ### Connectivity check
 
@@ -134,27 +141,16 @@ Verify SSH access to every node before a live run:
 
 ```bash
 # Prod
-auto-patchinator check-connectivity \
-  --inventory inventory/hosts.yaml \
-  --pas-gateway pas.sky.local
+auto-patchinator check-connectivity --pas-gateway pas.sky.local
 
 # Test
-auto-patchinator check-connectivity \
-  --inventory inventory/hosts.yaml \
-  --environment test \
-  --pas-gateway pas.sky.local
+auto-patchinator check-connectivity --environment test --pas-gateway pas.sky.local
 
 # Root identity only
-auto-patchinator check-connectivity \
-  --inventory inventory/hosts.yaml \
-  --identity root \
-  --pas-gateway pas.sky.local
+auto-patchinator check-connectivity --identity root --pas-gateway pas.sky.local
 
 # Specific hosts
-auto-patchinator check-connectivity \
-  --inventory inventory/hosts.yaml \
-  --hosts prdmilbbspksh01 prdmilbbspksh02 \
-  --pas-gateway pas.sky.local
+auto-patchinator check-connectivity --hosts prdmilbbspksh01 prdmilbbspksh02
 ```
 
 ---
@@ -204,9 +200,9 @@ All are gitignored.
 
 | Path | Contents |
 |---|---|
-| `state/run-<id>.json` | Live run state; updated after every action; used for resume |
-| `reports/run-<id>.md` | Markdown report written at end of run (or on quit) |
-| `logs/run-<id>.log` | Full DEBUG log: plan resolution, every SSH send/receive, operator choices. Passwords logged as `<redacted>`. |
+| `state/run-<id>.json` | Live run state; updated after every action; used for resume. Only **one** state file is kept at a time — starting or resuming a run deletes any other leftover run state. |
+| `reports/run-<id>.md` | Markdown report written at end of run (or on quit) — not pruned |
+| `logs/run-<id>.log` | Full DEBUG log: plan resolution, every SSH send/receive, operator choices. Passwords logged as `<redacted>`. Only the **3** most recently modified log files are kept; older ones are deleted automatically. |
 
 ---
 

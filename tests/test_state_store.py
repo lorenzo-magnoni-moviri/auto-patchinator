@@ -51,3 +51,29 @@ def test_skipped_counts_as_complete(tmp_path: Path, inventory):
         for _, action in step.all_action_states():
             action.status = ActionStatus.SKIPPED
     assert state.is_complete()
+
+
+def test_prune_other_states_keeps_only_the_named_run(tmp_path: Path, inventory):
+    plan = _run_plan(inventory)
+    keep = store.build_initial_state("keep-me", "p.xlsx", "s", plan)
+    old1 = store.build_initial_state("old-1", "p.xlsx", "s", plan)
+    old2 = store.build_initial_state("old-2", "p.xlsx", "s", plan)
+    for state in (keep, old1, old2):
+        store.save(state, tmp_path)
+
+    deleted = store.prune_other_states(tmp_path, "keep-me")
+
+    remaining = {p.name for p in tmp_path.glob("run-*.json")}
+    assert remaining == {"run-keep-me.json"}
+    assert {p.name for p in deleted} == {"run-old-1.json", "run-old-2.json"}
+
+
+def test_prune_other_states_missing_dir_is_a_noop(tmp_path: Path):
+    assert store.prune_other_states(tmp_path / "nope", "any-run") == []
+
+
+def test_prune_other_states_single_run_deletes_nothing(tmp_path: Path, inventory):
+    plan = _run_plan(inventory)
+    state = store.build_initial_state("only-one", "p.xlsx", "s", plan)
+    store.save(state, tmp_path)
+    assert store.prune_other_states(tmp_path, "only-one") == []

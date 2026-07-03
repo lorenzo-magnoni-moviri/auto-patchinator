@@ -144,9 +144,9 @@ Open items, roughly in priority order.
   verification, via `load_splunk_api_credentials()`. Deferred to v2 but the credential
   dependency is now resolved, not implementation complexity.
 
-- [ ] **`waves/` directory cleanup** — `waves/wave7.yaml` is a leftover from the old
-  manual group→host YAML approach (removed in favour of reading directly from the Excel
-  host sheet). Safe to delete once confirmed no one is referencing it.
+- [x] **`waves/` directory cleanup** — the leftover `waves/wave7.yaml` from the old
+  manual group→host YAML approach is gone; confirmed nothing in code or docs references
+  `waves/` anymore.
 
 ---
 

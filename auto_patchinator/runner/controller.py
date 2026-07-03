@@ -23,6 +23,7 @@ import re
 import time
 from typing import Callable, Protocol
 
+from auto_patchinator.actions.sequences import CRONTAB_BACKUP
 from auto_patchinator.actions.types import Action, ActionKind, Identity
 from auto_patchinator.config.inventory import Inventory
 from auto_patchinator.executor.ssh import su_command
@@ -92,14 +93,14 @@ _GUIDE_DESCRIPTIONS = {
     "daemon_reload": "Make systemd re-read the restored unit file.",
     "clean_kvstore": "Clear the local KV store so it resyncs cleanly from the cluster.",
     "backup_crontab": (
-        "Save the splunk user's crontab to /home/splunk/crontab.backup BEFORE it gets "
+        f"Save the splunk user's crontab to {CRONTAB_BACKUP} BEFORE it gets "
         "deleted - it is restored from this file after patching."
     ),
     "disable_crontab": (
         "Delete the splunk user's crontab so no scheduled jobs fire mid-patching. The "
         "crontab command is aliased to 'crontab -i': answer 'yes' at the confirmation."
     ),
-    "enable_crontab": "Restore the crontab from the /home/splunk/crontab.backup copy.",
+    "enable_crontab": f"Restore the crontab from the {CRONTAB_BACKUP} copy.",
 }
 
 

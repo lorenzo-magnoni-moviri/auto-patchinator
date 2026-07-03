@@ -253,8 +253,11 @@ Examples:
 ### Action sequence per node (stop half)
 
 1. `stop_splunk` — `sudo <splunk_bin> stop`
-2. `backup_systemd_unit` — `cp Splunkd.service Splunkd.service.copy`
+2. `backup_systemd_unit` — `cp /etc/systemd/system/Splunkd.service /appl/home/splunk/Splunkd.service.copy`
 3. `disable_boot_start` — `sudo <splunk_bin> disable boot-start`
+
+Forwarders also back up the crontab first (`crontab -l > /appl/home/splunk/crontab.backup`)
+before `disable_crontab` deletes it.
 
 ### Action sequence per node (start half)
 

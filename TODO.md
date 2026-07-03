@@ -95,7 +95,9 @@ Open items, roughly in priority order.
 - [ ] **Verify `backup_crontab` restores correctly on a real forwarder** — fixed a bug
   this session where `disable_crontab` deleted the splunk user's crontab with nothing
   backing it up first (`enable_crontab` restored from a file that was never written).
-  `backup_crontab` (`crontab -l > /home/splunk/crontab.backup`) now runs first on both
+  `backup_crontab` (`crontab -l > /appl/home/splunk/crontab.backup` — path updated
+  2026-07-03 to the shared `/appl/home/splunk` scratch dir used on every node) now runs
+  first on both
   the forwarder role and the `prdmilbbspkfw02` override, and it's unit-tested that the
   sequencing and filename match — but not yet verified against a real node's actual
   crontab.

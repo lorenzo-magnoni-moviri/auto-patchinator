@@ -29,7 +29,12 @@ SPLUNK_BIN = "/opt/splunk/bin/splunk"
 SPLUNK_BIN_INDEXER = "/splunkdata/splunk/bin/splunk"
 
 SPLUNK_SERVICE_UNIT = "/etc/systemd/system/Splunkd.service"
-SPLUNK_SERVICE_UNIT_BACKUP = "/etc/systemd/system/Splunkd.service.copy"
+
+# Shared scratch directory present on every node - used to stash the systemd unit file
+# and crontab backups made during the stop half, restored during the start half.
+APPLHOME_DIR = "/appl/home/splunk"
+SPLUNK_SERVICE_UNIT_BACKUP = f"{APPLHOME_DIR}/Splunkd.service.copy"
+CRONTAB_BACKUP = f"{APPLHOME_DIR}/crontab.backup"
 
 
 class NodeRole(str, Enum):
@@ -143,7 +148,7 @@ def backup_crontab() -> Action:
         name="backup_crontab",
         kind=ActionKind.PLAIN,
         identity=Identity.SPLUNK,
-        command="crontab -l > /home/splunk/crontab.backup",
+        command=f"crontab -l > {CRONTAB_BACKUP}",
         note="Save the current crontab BEFORE deleting it - enable_crontab restores from this file.",
     )
 
@@ -166,7 +171,7 @@ def enable_crontab() -> Action:
         name="enable_crontab",
         kind=ActionKind.PLAIN,
         identity=Identity.SPLUNK,
-        command="crontab /home/splunk/crontab.backup",
+        command=f"crontab {CRONTAB_BACKUP}",
         note="Restore the crontab saved by backup_crontab.",
     )
 

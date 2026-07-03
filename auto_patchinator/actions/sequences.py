@@ -138,6 +138,16 @@ def clean_kvstore(splunk_bin: str) -> Action:
     )
 
 
+def backup_crontab() -> Action:
+    return Action(
+        name="backup_crontab",
+        kind=ActionKind.PLAIN,
+        identity=Identity.SPLUNK,
+        command="crontab -l > /home/splunk/crontab.backup",
+        note="Save the current crontab BEFORE deleting it - enable_crontab restores from this file.",
+    )
+
+
 def disable_crontab() -> Action:
     return Action(
         name="disable_crontab",
@@ -157,7 +167,7 @@ def enable_crontab() -> Action:
         kind=ActionKind.PLAIN,
         identity=Identity.SPLUNK,
         command="crontab /home/splunk/crontab.backup",
-        note="Restore the crontab backed up by disable_crontab.",
+        note="Restore the crontab saved by backup_crontab.",
     )
 
 
@@ -242,7 +252,7 @@ def search_head_stretched_sequences() -> RoleSequences:
 
 def forwarder_sequences() -> RoleSequences:
     return RoleSequences(
-        stop_per_node=(disable_crontab(), *_default_stop(SPLUNK_BIN)),
+        stop_per_node=(backup_crontab(), disable_crontab(), *_default_stop(SPLUNK_BIN)),
         start_per_node=(*_default_start(SPLUNK_BIN), enable_crontab()),
     )
 
@@ -254,6 +264,7 @@ def forwarder_sequences() -> RoleSequences:
 def _prdmilbbspkfw02_sequences() -> RoleSequences:
     return RoleSequences(
         stop_per_node=(
+            backup_crontab(),
             disable_crontab(),
             wait(180, "Allow in-flight cron jobs to finish before touching StreamSets."),
             manual_todo("disable_streamsets_pipelines", "Disable the StreamSets pipelines on this node."),

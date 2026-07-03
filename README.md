@@ -168,7 +168,7 @@ At the start of each Excel step the operator chooses how to run it:
 | `a` | **Automatic** — actions run back to back, one line each; pauses only for manual steps and failures |
 | `A` | Automatic for **all remaining steps** |
 | `t` | **Task-by-task** — confirm each action before it runs |
-| `m` | **Manual guide** — executes **nothing**: prints every command with the host to run it on, the exact PAS ssh login + su command for the right user, and an explanation of why; you do it all by hand, then mark everything done (or record it action by action) |
+| `m` | **Manual guide** — executes **nothing**: shows one task at a time (command, host, which user to become and how, and why), waits for ENTER after you have done it by hand (connection via WinSSH), then moves to the next; `l` lists all of the step's tasks at once, `s` skips, `q` quits |
 
 Within task-by-task mode each action offers:
 

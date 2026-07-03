@@ -6,10 +6,10 @@ action, and lets the operator drive each major step in one of three modes:
                   confirmations (press ENTER) and failures (retry menu).
   - task-by-task: the operator confirms every action before it runs
                   (run / mark-manual / skip / back / jump / quit).
-  - manual guide: nothing is executed - prints the full ordered list of commands
-                  with, per action, where to run it, as which user (including the
-                  exact PAS login string and su command), and why. The operator
-                  performs everything by hand and then records the result.
+  - manual guide: nothing is executed - each task is shown one at a time (command,
+                  host, user + su command, and why); the operator performs it by
+                  hand (connecting via WinSSH) and presses ENTER to move to the
+                  next one. 'l' lists all of the step's tasks at once.
 
 The mode is asked at the start of every step ([A] applies automatic to all remaining
 steps; the --full-auto-mode CLI flag skips the question entirely). Failures show in red
@@ -25,7 +25,7 @@ from typing import Callable, Protocol
 
 from auto_patchinator.actions.types import Action, ActionKind, Identity
 from auto_patchinator.config.inventory import Inventory
-from auto_patchinator.executor.ssh import login_username, su_command
+from auto_patchinator.executor.ssh import su_command
 from auto_patchinator.plan.run_plan import RunStepPlan
 from auto_patchinator.state import store
 from auto_patchinator.state.models import (
@@ -63,6 +63,7 @@ _AUTO_LABELS = {
     "enable_boot_start": "enabling boot-start",
     "daemon_reload": "reloading systemd daemon",
     "clean_kvstore": "cleaning kvstore",
+    "backup_crontab": "backing up crontab",
     "disable_crontab": "disabling crontab",
     "enable_crontab": "restoring crontab",
 }
@@ -90,6 +91,10 @@ _GUIDE_DESCRIPTIONS = {
     ),
     "daemon_reload": "Make systemd re-read the restored unit file.",
     "clean_kvstore": "Clear the local KV store so it resyncs cleanly from the cluster.",
+    "backup_crontab": (
+        "Save the splunk user's crontab to /home/splunk/crontab.backup BEFORE it gets "
+        "deleted - it is restored from this file after patching."
+    ),
     "disable_crontab": (
         "Delete the splunk user's crontab so no scheduled jobs fire mid-patching. The "
         "crontab command is aliased to 'crontab -i': answer 'yes' at the confirmation."
@@ -152,7 +157,6 @@ class RunController:
         inventory: Inventory,
         dry_run: bool = False,
         full_auto: bool = False,
-        gateway: tuple[str | None, int] = (None, 22),
     ) -> None:
         self._plans = {p.excel_step: p for p in run_plan}
         self._order = [p.excel_step for p in run_plan]
@@ -162,7 +166,6 @@ class RunController:
         self._inventory = inventory
         self._dry_run = dry_run
         self._full_auto = full_auto
-        self._gateway = gateway
         self._jump_target_index: int | None = None
 
     def run(self) -> None:
@@ -236,19 +239,7 @@ class RunController:
         _log.info("step %s run mode: %s", excel_step, mode)
 
         if mode == "manual":
-            self._print_manual_guide(pending)
-            choice = self._guide_followup()
-            _log.info("manual guide follow-up for step %s: %r", excel_step, choice)
-            if choice == "q":
-                return "quit"
-            if choice == "d":
-                for _, _, action_state in pending:
-                    action_state.status = ActionStatus.SUCCESS
-                    action_state.output = "confirmed done manually by operator (manual guide)"
-                self._save()
-                print(green(f"All {len(pending)} action(s) marked as done."))
-                return "next"
-            mode = "task"  # choice == "t": record them one by one
+            return self._run_manual_guide(pending)
 
         for scope, action, action_state in pending:
             if action_state.status in (ActionStatus.SUCCESS, ActionStatus.SKIPPED):
@@ -267,8 +258,8 @@ class RunController:
         print("                          manual confirmations and failures")
         print("      [A] automatic for ALL remaining steps (stop asking)")
         print("      [t] task-by-task  - confirm every action before it runs")
-        print("      [m] manual guide  - execute NOTHING: print every command with where to")
-        print("                          run it, as which user, and why - you do it all by hand")
+        print("      [m] manual guide  - execute NOTHING: shows each task one at a time (command,")
+        print("                          host, user, and why) and waits for you to do it by hand")
         print("      [q] quit")
         while True:
             choice = input("    > ").strip()
@@ -289,26 +280,12 @@ class RunController:
     # Manual guide mode
     # ------------------------------------------------------------------
 
-    def _ssh_hint(self, hostname: str, identity: Identity) -> str:
-        """The exact ssh command + su step to reach <identity> on <hostname> by hand."""
+    def _su_hint(self, hostname: str, identity: Identity) -> str:
+        """The su command to become <identity> on <hostname> (connection is via WinSSH)."""
         host = self._inventory.get(hostname)
-        gw_host, gw_port = self._gateway
-        if gw_host:
-            login = login_username(
-                "<your-user>", identity, hostname,
-                pas_domain_suffix=host.effective_pas_domain_suffix(self._inventory.pas_domain_suffix),
-                pas_port=host.effective_pas_port(self._inventory.pas_port),
-                pas_suffixes=self._inventory.pas_suffixes,
-            )
-            port = f" -p {gw_port}" if gw_port != 22 else ""
-            ssh = f"ssh{port} '{login}'@{gw_host}"
-        else:
-            ssh = f"ssh <your-user>@{hostname}  (no PAS gateway configured)"
         if identity == Identity.SPLUNK and host.splunk_su_command:
-            su = host.splunk_su_command
-        else:
-            su = su_command(identity, host.role)
-        return f"{ssh}   then: {su}"
+            return host.splunk_su_command
+        return su_command(identity, host.role)
 
     @staticmethod
     def _guide_what(action: Action) -> list[str]:
@@ -324,54 +301,81 @@ class RunController:
             return [f"wait {action.wait_seconds}s - {action.note}"]
         return (action.note or action.name).splitlines()
 
-    def _print_manual_guide(self, pending: list) -> None:
-        print(yellow("\n    MANUAL GUIDE - nothing will be executed. Do the following by hand, in order:"))
+    def _print_guide_scope_header(self, scope: str, actions: list[Action]) -> None:
+        if scope in (PRE_GROUP_SCOPE, POST_GROUP_SCOPE):
+            when = "before" if scope == PRE_GROUP_SCOPE else "after"
+            print(bold(f"\n    Once for the whole group ({when} the per-host work):"))
+            return
+        host = self._inventory.get(scope)
+        print(bold(f"\n    On host {scope} ({host.role.value}, site {host.site}):"))
+        for identity in dict.fromkeys(a.identity for a in actions if a.identity is not None):
+            forced = "  [CyberArk GUI only - no SSH]" if host.is_manual_only(identity) else ""
+            print(f"      become {identity.value} with: {self._su_hint(scope, identity)}{yellow(forced)}")
+
+    def _print_guide_task(self, number: int, total: int, action: Action) -> None:
+        who = action.identity.value if action.identity else "operator"
+        kind_note = "  (manual step)" if action.kind == ActionKind.MANUAL else ""
+        print(f"\n      task {number}/{total}: {action.name}  [user: {who}]{kind_note}")
+        what = self._guide_what(action)
+        print(f"         run : {what[0]}")
+        for extra in what[1:]:
+            print(f"               {extra}")
+        why = _GUIDE_DESCRIPTIONS.get(action.name) or (
+            action.note if action.kind != ActionKind.MANUAL else None
+        )
+        if why:
+            print(f"         why : {why}")
+
+    def _print_guide_overview(self, pending: list) -> None:
+        print(yellow("\n    All tasks in this step, in order:"))
+        for number, (scope, action, action_state) in enumerate(pending, start=1):
+            who = action.identity.value if action.identity else "operator"
+            what = self._guide_what(action)[0]
+            marker = {
+                ActionStatus.SUCCESS: " [done]",
+                ActionStatus.SKIPPED: " [skipped]",
+            }.get(action_state.status, "")
+            print(f"      {number:>2}. [{_scope_label(scope)}] {action.name} ({who}): {what}{marker}")
+        print()
+
+    def _run_manual_guide(self, pending: list) -> str:
+        print(yellow("\n    MANUAL GUIDE - nothing will be executed; each task is presented in order."))
+        total = len(pending)
+        last_scope = object()
         by_scope: dict[str, list[Action]] = {}
         for scope, action, _ in pending:
             by_scope.setdefault(scope, []).append(action)
 
-        number = 0
-        for scope, actions in by_scope.items():
-            if scope in (PRE_GROUP_SCOPE, POST_GROUP_SCOPE):
-                when = "before" if scope == PRE_GROUP_SCOPE else "after"
-                print(bold(f"\n    Once for the whole group ({when} the per-host work):"))
-            else:
-                host = self._inventory.get(scope)
-                print(bold(f"\n    On host {scope} ({host.role.value}, site {host.site}):"))
-                identities = dict.fromkeys(a.identity for a in actions if a.identity is not None)
-                for identity in identities:
-                    forced = " [CyberArk GUI only - no SSH]" if host.is_manual_only(identity) else ""
-                    print(f"      connect as {identity.value}{yellow(forced)}:")
-                    print(f"        {self._ssh_hint(scope, identity)}")
+        for number, (scope, action, action_state) in enumerate(pending, start=1):
+            if action_state.status in (ActionStatus.SUCCESS, ActionStatus.SKIPPED):
+                continue
+            if scope != last_scope:
+                self._print_guide_scope_header(scope, by_scope[scope])
+                last_scope = scope
+            self._print_guide_task(number, total, action)
 
-            for action in actions:
-                number += 1
-                who = action.identity.value if action.identity else "operator"
-                kind_note = "  (manual step)" if action.kind == ActionKind.MANUAL else ""
-                print(f"\n      {number}. {action.name}  [user: {who}]{kind_note}")
-                what = self._guide_what(action)
-                print(f"         run : {what[0]}")
-                for extra in what[1:]:
-                    print(f"               {extra}")
-                why = _GUIDE_DESCRIPTIONS.get(action.name) or (
-                    action.note if action.kind != ActionKind.MANUAL else None
-                )
-                if why:
-                    print(f"         why : {why}")
-        print()
+            while True:
+                answer = input(yellow(
+                    "         press ENTER when done to continue (s=skip, l=list all tasks, q=quit) ... "
+                )).strip().lower()
+                if answer == "l":
+                    self._print_guide_overview(pending)
+                    continue
+                break
+            _log.info("manual guide: operator answered %r for %s / %s", answer, scope, action.name)
 
-    @staticmethod
-    def _guide_followup() -> str:
-        prompt = (
-            "    When you have performed the steps above:\n"
-            "      [d] mark ALL of them as done  [t] record them one by one (task-by-task)  [q] quit\n"
-            "    > "
-        )
-        while True:
-            choice = input(prompt).strip().lower()
-            if choice in ("d", "t", "q"):
-                return choice
-            print("    Please choose one of: d, t, q")
+            if answer == "q":
+                return "quit"
+            if answer == "s":
+                action_state.status = ActionStatus.SKIPPED
+                self._save()
+                print(yellow("         SKIPPED"))
+                continue
+            action_state.status = ActionStatus.SUCCESS
+            action_state.output = "confirmed done manually by operator (manual guide)"
+            self._save()
+            print(green("         CONFIRMED"))
+        return "next"
 
     # ------------------------------------------------------------------
     # Automatic mode

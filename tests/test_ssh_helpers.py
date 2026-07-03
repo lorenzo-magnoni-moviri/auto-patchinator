@@ -2,6 +2,7 @@ from auto_patchinator.actions.sequences import NodeRole
 from auto_patchinator.actions.types import Identity
 from auto_patchinator.executor.ssh import (
     INDEXER_SPLUNK_SU,
+    PASSWORD_EXPIRED_PATTERN,
     CommandResult,
     SSHConnection,
     login_username,
@@ -51,3 +52,20 @@ def test_command_result_success_only_on_zero():
     assert CommandResult(exit_code=0, output="").success
     assert not CommandResult(exit_code=1, output="").success
     assert not CommandResult(exit_code=None, output="").success
+
+
+def test_password_expired_pattern_matches_real_banner_text():
+    # Actual banner text observed against a real PAS/CyberArk gateway with an expired
+    # root credential (see TODO.md) - a forced passwd-change prompt, not a shell prompt.
+    banner = (
+        "You are required to change your password immediately (password expired).\r\n"
+        "WARNING: Your password has expired.\r\n"
+        "You must change your password now and login again!\r\n"
+        "Changing password for user pas.tst.spk.root.\r\n"
+        "Current password: "
+    )
+    assert PASSWORD_EXPIRED_PATTERN.search(banner)
+
+
+def test_password_expired_pattern_does_not_match_normal_shell_prompt():
+    assert not PASSWORD_EXPIRED_PATTERN.search("[splunk@tstmilbbspkdp01 ~]$ ")

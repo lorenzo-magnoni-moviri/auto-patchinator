@@ -336,8 +336,10 @@ def cmd_check_connectivity(args: argparse.Namespace) -> None:
             )
             try:
                 conn.connect()
-                result = conn.run_plain("whoami", timeout=15)
-                conn.close()
+                try:
+                    result = conn.run_plain("whoami", timeout=15)
+                finally:
+                    conn.close()
                 who = _extract_whoami(result.output)
                 if result.success:
                     print(f"\r  {hostname:<{col_w}}  [{identity.value:<6}]  {_STATUS_OK}  whoami={who!r}")

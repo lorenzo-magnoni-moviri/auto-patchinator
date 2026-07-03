@@ -56,9 +56,29 @@ Open items, roughly in priority order.
   differently (different banner, different prompt timing). Do a `check-connectivity`
   against a few prod nodes before the first live wave.
 
-- [ ] **Root identity connectivity** — `check-connectivity` has only been run with
-  `--identity splunk`. Run with `--identity root` against both prod and test to verify
-  the `pas.prd.spk.root` / `pas.tst.spk.root` path works end to end.
+- [ ] **BLOCKED: Root identity connectivity is broken in test** — ran
+  `check-connectivity --identity root --environment test` (2026-07-03) against all 7
+  test hosts: **0 OK, 7 FAIL.** Two distinct failure modes, both on the PAS/CyberArk
+  side, not in this tool's code:
+  - `tstmilbbspkdp01`, `fw01`, `spksh01-03` (5 hosts): PAS gateway login itself rejects
+    the root identity outright (`Authentication failed.` before any shell is reached) —
+    looks like the root PAS account isn't entitled/provisioned for these hosts, or uses
+    a different password than the splunk identity (`.env` only has one AP_PASSWORD).
+  - `tstmilbbspkix01`, `ix02` (the 2 indexers): gateway login succeeds, but the root
+    account's password has **expired** on the target host, forcing an interactive
+    `passwd`-style prompt (`Changing password for user pas.tst.spk.root. Current
+    password:`) that `ssh.py` doesn't recognize — it just times out after 30s waiting
+    for a normal shell prompt. Also surfaced: `ix01`'s login banner showed "2 failed
+    login attempts since the last successful login" — i.e. failed attempts are being
+    counted, so repeated testing risks an account lockout.
+  - **Did not test prod** — hammering a possibly-broken/expiring root credential
+    against every production host risks lockout or a security alert; get the CyberArk
+    root credential fixed/rotated for test first, confirm clean, *then* test prod.
+  - Separate, safe code fix regardless of the credential issue: `ssh.py`'s `connect()`
+    should detect a forced password-change prompt and raise a clear
+    "root password has expired" error instead of an opaque 30s timeout; also, the
+    `except Exception` branch in `cmd_check_connectivity` never calls `conn.close()`
+    on a failed `connect()`, leaking the underlying socket until GC.
 
 - [ ] **Full end-to-end test on test environment** — run a complete live wave against
   the `tst*` nodes using `Vulnerability_Plan_TEST_Mockup.xlsx` (dry-run first, then

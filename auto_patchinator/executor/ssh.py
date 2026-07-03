@@ -46,6 +46,10 @@ SU_COMMAND = {
 INDEXER_SPLUNK_SU = "sudo /bin/su - splunk -s /bin/bash"
 
 PASSWORD_PROMPT_PATTERN = re.compile(r"assword.*:\s*$", re.IGNORECASE)
+# A forced password-change prompt (expired PAS/CyberArk credential) looks nothing like
+# a normal shell prompt, so without this the initial connect() read just times out
+# after 30s with no useful diagnosis - detect it and fail fast instead.
+PASSWORD_EXPIRED_PATTERN = re.compile(r"password has expired|changing password for", re.IGNORECASE)
 PROMPT_MARKER = "<<AP_READY>>"
 EXIT_MARKER = "AP_EXIT_CODE"
 
@@ -87,6 +91,10 @@ class CommandResult:
 
 
 class TimeoutReadingShell(RuntimeError):
+    pass
+
+
+class PasswordExpiredError(RuntimeError):
     pass
 
 
@@ -222,25 +230,41 @@ class SSHConnection:
             _log.error("%s connect failed after %d attempt(s): %s", label, _CONNECT_RETRIES, last_exc)
             raise last_exc
 
-        channel = client.invoke_shell()
-        session = _ShellSession(channel, label=label)
-        session.read_until(re.compile(r"[#$>]\s*$"), timeout=30)
+        # From here on the paramiko-level auth has already succeeded and `client` owns a
+        # live socket - any failure in the shell/su setup below must close it before
+        # propagating, or the connection leaks until garbage collection.
+        try:
+            channel = client.invoke_shell()
+            session = _ShellSession(channel, label=label)
+            banner = session.read_until(
+                re.compile(PASSWORD_EXPIRED_PATTERN.pattern + r"|[#$>]\s*$", re.IGNORECASE),
+                timeout=30,
+            )
+            if PASSWORD_EXPIRED_PATTERN.search(banner):
+                raise PasswordExpiredError(
+                    f"{label}: this identity's PAS/CyberArk password has expired on the "
+                    "target host (forced password-change prompt) - rotate it via "
+                    "CyberArk before retrying."
+                )
 
-        if self.identity == Identity.SPLUNK and self._splunk_su_command:
-            su_cmd = self._splunk_su_command
-        else:
-            su_cmd = su_command(self.identity, self.role)
-        session.send(su_cmd)
-        marker_or_password = session.read_until(
-            re.compile(PASSWORD_PROMPT_PATTERN.pattern + r"|[#$>]\s*$", re.IGNORECASE),
-            timeout=15,
-        )
-        if PASSWORD_PROMPT_PATTERN.search(marker_or_password):
-            session.send(self._credentials.password, sensitive=True)
-            session.read_until(re.compile(r"[#$>]\s*$"), timeout=15)
+            if self.identity == Identity.SPLUNK and self._splunk_su_command:
+                su_cmd = self._splunk_su_command
+            else:
+                su_cmd = su_command(self.identity, self.role)
+            session.send(su_cmd)
+            marker_or_password = session.read_until(
+                re.compile(PASSWORD_PROMPT_PATTERN.pattern + r"|[#$>]\s*$", re.IGNORECASE),
+                timeout=15,
+            )
+            if PASSWORD_PROMPT_PATTERN.search(marker_or_password):
+                session.send(self._credentials.password, sensitive=True)
+                session.read_until(re.compile(r"[#$>]\s*$"), timeout=15)
 
-        session.send(f"PS1='{PROMPT_MARKER}'")
-        session.read_until(PROMPT_MARKER, timeout=15)
+            session.send(f"PS1='{PROMPT_MARKER}'")
+            session.read_until(PROMPT_MARKER, timeout=15)
+        except Exception:
+            client.close()
+            raise
 
         self._client = client
         self._session = session

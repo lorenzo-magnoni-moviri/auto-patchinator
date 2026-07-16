@@ -166,7 +166,7 @@ At the start of each Excel step the operator chooses how to run it:
 | `a` | **Automatic** — actions run back to back, one line each; pauses only for manual steps and failures |
 | `A` | Automatic for **all remaining steps** |
 | `t` | **Task-by-task** — confirm each action before it runs |
-| `m` | **Manual guide** — executes **nothing**: shows one task at a time (command, host, which user to become and how, and why), waits for ENTER after you have done it by hand (connection via WinSSH), then moves to the next; `l` lists all of the step's tasks at once, `s` skips, `q` quits |
+| `m` | **Manual guide** — executes **nothing**: shows the command, which user to become and how, and why, then waits for ENTER after you have done it by hand (connection via WinSSH). Hosts sharing an identical role/task list (e.g. 5 search heads) are shown **once** with a "repeat on all N hosts" note, and confirmed **together** in one go — `i` falls back to confirming them one host at a time if one needs individual handling; `l` lists every task at once, `s` skips, `q` quits |
 
 Within task-by-task mode each action offers:
 

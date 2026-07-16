@@ -546,23 +546,46 @@ during a first live run.
 
 ### Manual guide (`m`)
 
-**Executes nothing.** Presents each pending task one at a time:
+**Executes nothing.** Presents the pending tasks for a single host as before, but
+**hosts sharing an identical remaining task list and `su` hint are batched**: shown
+once, with a note to repeat the sequence on every host in the batch, and confirmed
+together in one go — no need to page through the same 3-command sequence 5 times for
+5 search heads:
 
 ```
-On host tstmilbbspkdp01 (deployer, site milano):
+On 5 hosts (search_head_stretched, site milano): tstmilbbspksh01, tstmilbbspksh02,
+tstmilbbspksh03, tstmilbbspksh04, tstmilbbspksh05
   become splunk with: sudo su - splunk
   become root with: sudo su - root
+  Repeat the 3 task(s) below IDENTICALLY on EACH of these 5 hosts.
 
-  task 2/10: stop_splunk  [user: splunk]
+  task 1/3: stop_splunk  [user: splunk]
      run : sudo /opt/splunk/bin/splunk stop
      why : Stop the Splunk process cleanly before the OS is patched.
-     press ENTER when done to continue (s=skip, l=list all tasks, q=quit) ...
+
+  task 2/3: backup_systemd_unit  [user: root]
+     run : cp /etc/systemd/system/Splunkd.service /appl/home/splunk/Splunkd.service.copy
+     why : ...
+
+  task 3/3: disable_boot_start  [user: splunk]
+     run : sudo /opt/splunk/bin/splunk disable boot-start
+     why : ...
+
+    Once you've done the above IDENTICALLY on ALL 5 hosts, press ENTER to confirm
+      (or: [i] confirm host-by-host instead  [s] skip all  [l] list all tasks  [q] quit)
 ```
 
-No `ssh` command is shown, since the team connects via WinSSH, not the raw `ssh` CLI —
-only the `su` step is shown (identical whichever way you got onto the box). `l` lists
-every task in the step at once (with `[done]`/`[skipped]` markers for ones already
-handled) without changing anything; `s` skips, `q` quits (progress saved).
+The grouping (`RunController._host_profile` / `_build_host_groups`) compares each host's
+exact remaining action sequence (name/kind/command/script — identical for same-role
+hosts, since neither the Splunk binary path nor any command text depends on the
+hostname) *and* its resolved `su` hint (which **can** differ per host via
+`splunk_su_command` overrides, or a `manual_identities` CyberArk-GUI-only flag) — only
+hosts matching on both are batched. `i` falls back to confirming the same hosts one at a
+time (e.g. if one of them had a problem and needs individual handling); a single host is
+shown exactly as before, just with singular wording. `l` lists every task for every host
+at once (with `[done]`/`[skipped]` markers), unaffected by batching; `s` skips, `q` quits
+(progress saved). No `ssh` command is ever shown, since the team connects via WinSSH, not
+the raw `ssh` CLI — only the `su` step is shown.
 
 ### Failures (all executing modes)
 

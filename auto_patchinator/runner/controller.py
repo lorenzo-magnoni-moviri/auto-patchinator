@@ -313,6 +313,27 @@ class RunController:
             forced = "  [CyberArk GUI only - no SSH]" if host.is_manual_only(identity) else ""
             print(f"      become {identity.value} with: {self._su_hint(scope, identity)}{yellow(forced)}")
 
+    def _print_guide_group_header(self, hostnames: list[str], actions: list[Action]) -> None:
+        """Same as _print_guide_scope_header, but for a batch of hosts sharing an
+        identical remaining task list - printed once instead of once per host."""
+        if len(hostnames) == 1:
+            self._print_guide_scope_header(hostnames[0], actions)
+            return
+        representative = self._inventory.get(hostnames[0])
+        sites = sorted({self._inventory.get(h).site for h in hostnames})
+        site_note = sites[0] if len(sites) == 1 else "/".join(sites)
+        print(bold(
+            f"\n    On {len(hostnames)} hosts ({representative.role.value}, site {site_note}): "
+            + ", ".join(hostnames)
+        ))
+        for identity in dict.fromkeys(a.identity for a in actions if a.identity is not None):
+            forced = "  [CyberArk GUI only - no SSH]" if representative.is_manual_only(identity) else ""
+            print(f"      become {identity.value} with: {self._su_hint(hostnames[0], identity)}{yellow(forced)}")
+        print(yellow(
+            f"      Repeat the {len(actions)} task(s) below IDENTICALLY on EACH of these "
+            f"{len(hostnames)} hosts."
+        ))
+
     def _print_guide_task(self, number: int, total: int, action: Action) -> None:
         who = action.identity.value if action.identity else "operator"
         kind_note = "  (manual step)" if action.kind == ActionKind.MANUAL else ""
@@ -339,43 +360,165 @@ class RunController:
             print(f"      {number:>2}. [{_scope_label(scope)}] {action.name} ({who}): {what}{marker}")
         print()
 
-    def _run_manual_guide(self, pending: list) -> str:
-        print(yellow("\n    MANUAL GUIDE - nothing will be executed; each task is presented in order."))
-        total = len(pending)
-        last_scope = object()
-        by_scope: dict[str, list[Action]] = {}
-        for scope, action, _ in pending:
-            by_scope.setdefault(scope, []).append(action)
+    def _host_profile(self, hostname: str, actions_and_states: list) -> tuple:
+        """Signature used to detect hosts whose remaining manual-guide work is
+        identical, so they can be presented and confirmed as one batch instead of
+        once per host (e.g. 5 identical search-head stops)."""
+        host = self._inventory.get(hostname)
+        action_sig = tuple((a.name, a.kind, a.command, a.script) for a, _ in actions_and_states)
+        identities = dict.fromkeys(a.identity for a, _ in actions_and_states if a.identity is not None)
+        su_sig = tuple(
+            (identity, self._su_hint(hostname, identity), host.is_manual_only(identity))
+            for identity in identities
+        )
+        return action_sig, su_sig
 
-        for number, (scope, action, action_state) in enumerate(pending, start=1):
-            if action_state.status in (ActionStatus.SUCCESS, ActionStatus.SKIPPED):
+    def _build_host_groups(self, host_items: list) -> list[tuple[list[str], dict]]:
+        """Group per-host pending items by _host_profile, preserving first-seen order
+        of both hosts and profiles. Returns [(hostnames, {hostname: [(action, state), ...]})]."""
+        per_host: dict[str, list] = {}
+        order: list[str] = []
+        for scope, action, action_state in host_items:
+            if scope not in per_host:
+                per_host[scope] = []
+                order.append(scope)
+            per_host[scope].append((action, action_state))
+
+        groups: list[list[str]] = []
+        profile_to_group: dict[tuple, list[str]] = {}
+        for hostname in order:
+            profile = self._host_profile(hostname, per_host[hostname])
+            if profile not in profile_to_group:
+                profile_to_group[profile] = []
+                groups.append(profile_to_group[profile])
+            profile_to_group[profile].append(hostname)
+
+        return [(hostnames, {h: per_host[h] for h in hostnames}) for hostnames in groups]
+
+    def _confirm_task(self, pending: list, scope: str, action: Action, action_state: ActionState) -> str:
+        """Show one task and get the operator's answer. Returns 'continue' or 'quit'."""
+        while True:
+            answer = input(yellow(
+                "         press ENTER when done to continue (s=skip, l=list all tasks, q=quit) ... "
+            )).strip().lower()
+            if answer == "l":
+                self._print_guide_overview(pending)
                 continue
-            if scope != last_scope:
-                self._print_guide_scope_header(scope, by_scope[scope])
-                last_scope = scope
+            break
+        _log.info("manual guide: operator answered %r for %s / %s", answer, scope, action.name)
+
+        if answer == "q":
+            return "quit"
+        if answer == "s":
+            action_state.status = ActionStatus.SKIPPED
+            self._save()
+            print(yellow("         SKIPPED"))
+            return "continue"
+        action_state.status = ActionStatus.SUCCESS
+        action_state.output = "confirmed done manually by operator (manual guide)"
+        self._save()
+        print(green("         CONFIRMED"))
+        return "continue"
+
+    def _guide_single_scope_block(self, pending: list, scope: str, items: list) -> str:
+        """Walk a pre/post-group scope's tasks one at a time (these aren't per-host,
+        so there's nothing to batch)."""
+        if not items:
+            return "continue"
+        self._print_guide_scope_header(scope, [a for a, _ in items])
+        total = len(items)
+        for number, (action, action_state) in enumerate(items, start=1):
+            self._print_guide_task(number, total, action)
+            if self._confirm_task(pending, scope, action, action_state) == "quit":
+                return "quit"
+        return "continue"
+
+    def _guide_host_group(self, pending: list, hostnames: list[str], per_host_map: dict) -> str:
+        """Present one group of hosts sharing an identical task list. Lets the
+        operator mark the whole batch done/skipped at once, or fall back to
+        confirming host by host if something needs individual handling."""
+        representative_actions = [a for a, _ in per_host_map[hostnames[0]]]
+        total = len(representative_actions)
+
+        self._print_guide_group_header(hostnames, representative_actions)
+        for number, action in enumerate(representative_actions, start=1):
             self._print_guide_task(number, total, action)
 
-            while True:
-                answer = input(yellow(
-                    "         press ENTER when done to continue (s=skip, l=list all tasks, q=quit) ... "
-                )).strip().lower()
-                if answer == "l":
-                    self._print_guide_overview(pending)
-                    continue
-                break
-            _log.info("manual guide: operator answered %r for %s / %s", answer, scope, action.name)
-
-            if answer == "q":
-                return "quit"
-            if answer == "s":
-                action_state.status = ActionStatus.SKIPPED
-                self._save()
-                print(yellow("         SKIPPED"))
+        plural = len(hostnames) > 1
+        while True:
+            if plural:
+                prompt = (
+                    f"\n    Once you've done the above IDENTICALLY on ALL {len(hostnames)} hosts, "
+                    "press ENTER to confirm\n"
+                    f"      (or: [i] confirm host-by-host instead  [s] skip all  "
+                    "[l] list all tasks  [q] quit)\n    > "
+                )
+            else:
+                prompt = (
+                    "\n    Once you've completed the above on this host, press ENTER to confirm\n"
+                    "      (or: [i] confirm task-by-task instead  [s] skip  "
+                    "[l] list all tasks  [q] quit)\n    > "
+                )
+            answer = input(yellow(prompt)).strip().lower()
+            if answer == "l":
+                self._print_guide_overview(pending)
                 continue
-            action_state.status = ActionStatus.SUCCESS
-            action_state.output = "confirmed done manually by operator (manual guide)"
+            break
+        _log.info("manual guide: group answer %r for %d host(s), %d task(s) each", answer, len(hostnames), total)
+
+        if answer == "q":
+            return "quit"
+        if answer == "i":
+            return self._guide_host_group_individually(pending, hostnames, per_host_map)
+        if answer == "s":
+            for host_actions in per_host_map.values():
+                for _, action_state in host_actions:
+                    action_state.status = ActionStatus.SKIPPED
             self._save()
-            print(green("         CONFIRMED"))
+            print(yellow(f"         SKIPPED for {len(hostnames)} host(s)"))
+            return "continue"
+        for host_actions in per_host_map.values():
+            for _, action_state in host_actions:
+                action_state.status = ActionStatus.SUCCESS
+                action_state.output = "confirmed done manually by operator (manual guide, batch)"
+        self._save()
+        print(green(f"         CONFIRMED for {len(hostnames)} host(s)"))
+        return "continue"
+
+    def _guide_host_group_individually(self, pending: list, hostnames: list[str], per_host_map: dict) -> str:
+        """Fallback from a batched group: confirm each host's tasks one at a time,
+        for when something went wrong on one host, or one just needs closer attention."""
+        for hostname in hostnames:
+            actions_and_states = per_host_map[hostname]
+            self._print_guide_scope_header(hostname, [a for a, _ in actions_and_states])
+            total = len(actions_and_states)
+            for number, (action, action_state) in enumerate(actions_and_states, start=1):
+                self._print_guide_task(number, total, action)
+                if self._confirm_task(pending, hostname, action, action_state) == "quit":
+                    return "quit"
+        return "continue"
+
+    def _run_manual_guide(self, pending: list) -> str:
+        print(yellow(
+            "\n    MANUAL GUIDE - nothing will be executed; identical work across hosts is batched."
+        ))
+
+        pre_items = [(a, st) for s, a, st in pending if s == PRE_GROUP_SCOPE]
+        post_items = [(a, st) for s, a, st in pending if s == POST_GROUP_SCOPE]
+        host_items = [
+            (s, a, st) for s, a, st in pending if s not in (PRE_GROUP_SCOPE, POST_GROUP_SCOPE)
+        ]
+
+        if self._guide_single_scope_block(pending, PRE_GROUP_SCOPE, pre_items) == "quit":
+            return "quit"
+
+        for hostnames, per_host_map in self._build_host_groups(host_items):
+            if self._guide_host_group(pending, hostnames, per_host_map) == "quit":
+                return "quit"
+
+        if self._guide_single_scope_block(pending, POST_GROUP_SCOPE, post_items) == "quit":
+            return "quit"
+
         return "next"
 
     # ------------------------------------------------------------------

@@ -45,6 +45,11 @@ Open items, roughly in priority order.
   wave Excels are gitignored) on every push and pull request.
 - [x] **Branch protection on `main`** — PR + passing `test` status check now required
   before merge, configured in GitHub repo settings.
+- [x] **Manual guide batches identical hosts** — patching a whole group (e.g. 5 search
+  heads) used to show and confirm the same task list once per host. Hosts sharing an
+  identical remaining task list + `su` hint are now shown once, with a "repeat on all
+  N hosts" note, and confirmed together in one go; `i` falls back to per-host
+  confirmation if one needs individual handling.
 
 ---
 

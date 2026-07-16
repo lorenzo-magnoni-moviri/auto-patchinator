@@ -218,14 +218,14 @@ def captain_transfer_static(other_site_label: str) -> Action:
     """Manual step injected once before the first stretched-SH stop in a wave."""
     return manual_todo(
         "transfer_captain_static",
-        "Cluster-wide, before touching this site: on the chosen new captain (a host on "
-        f"{other_site_label}, the site NOT being patched) run "
-        f"`{SPLUNK_BIN} edit shcluster-config -mode captain "
-        "-captain_uri https://<new-captain-host>.sky.local:8089 -election false`; then on every "
-        "OTHER search head in the whole cluster (both sites) run "
-        f"`{SPLUNK_BIN} edit shcluster-config -mode member "
-        "-captain_uri https://<new-captain-host>.sky.local:8089 -election false` "
-        "(as the splunk user).",
+        "Cluster-wide, before touching this site (as the splunk user):\n"
+        f"1. On the CHOSEN NEW CAPTAIN (a host on {other_site_label}, the site NOT "
+        "being patched), run:\n"
+        f"   {SPLUNK_BIN} edit shcluster-config -mode captain "
+        "-captain_uri https://<new-captain-host>.sky.local:8089 -election false\n"
+        "2. Then on EVERY OTHER search head in the whole cluster (both sites), run:\n"
+        f"   {SPLUNK_BIN} edit shcluster-config -mode member "
+        "-captain_uri https://<new-captain-host>.sky.local:8089 -election false",
     )
 
 
@@ -233,13 +233,16 @@ def captain_revert_dynamic() -> Action:
     """Manual step injected once after the last stretched-SH start in a wave."""
     return manual_todo(
         "revert_captain_dynamic",
-        "Once all nodes on this site are fully back up: on every member except the current "
-        "captain, then lastly on the captain itself, run "
-        f"`{SPLUNK_BIN} edit shcluster-config -election true "
-        "-mgmt_uri https://<that-node>.sky.local:8089`; then from the captain run "
-        f"`{SPLUNK_BIN} bootstrap shcluster-captain -servers_list \"https://<host1>.sky.local:8089,"
-        "...\" -auth admin:<password>` - DO NOT hardcode the admin password anywhere in this "
-        "repo or commit history; type it only at the live terminal.",
+        "Once all nodes on this site are fully back up (as the splunk user):\n"
+        "1. On every member EXCEPT the current captain, then LASTLY on the captain "
+        "itself, run:\n"
+        f"   {SPLUNK_BIN} edit shcluster-config -election true "
+        "-mgmt_uri https://<that-node>.sky.local:8089\n"
+        "2. Then from the captain, run:\n"
+        f"   {SPLUNK_BIN} bootstrap shcluster-captain -servers_list "
+        "\"https://<host1>.sky.local:8089,...\" -auth admin:<password>\n"
+        "   DO NOT hardcode the admin password anywhere in this repo or commit "
+        "history - type it only at the live terminal.",
     )
 
 

@@ -220,12 +220,12 @@ def captain_transfer_static(other_site_label: str) -> Action:
         "transfer_captain_static",
         "Cluster-wide, before touching this site: on the chosen new captain (a host on "
         f"{other_site_label}, the site NOT being patched) run "
-        "`<splunk_bin> edit shcluster-config -mode captain "
+        f"`{SPLUNK_BIN} edit shcluster-config -mode captain "
         "-captain_uri https://<new-captain-host>.sky.local:8089 -election false`; then on every "
         "OTHER search head in the whole cluster (both sites) run "
-        "`<splunk_bin> edit shcluster-config -mode member "
+        f"`{SPLUNK_BIN} edit shcluster-config -mode member "
         "-captain_uri https://<new-captain-host>.sky.local:8089 -election false` "
-        "(splunk user, full bin path per host's role).",
+        "(as the splunk user).",
     )
 
 
@@ -235,9 +235,9 @@ def captain_revert_dynamic() -> Action:
         "revert_captain_dynamic",
         "Once all nodes on this site are fully back up: on every member except the current "
         "captain, then lastly on the captain itself, run "
-        "`<splunk_bin> edit shcluster-config -election true "
+        f"`{SPLUNK_BIN} edit shcluster-config -election true "
         "-mgmt_uri https://<that-node>.sky.local:8089`; then from the captain run "
-        "`<splunk_bin> bootstrap shcluster-captain -servers_list \"https://<host1>.sky.local:8089,"
+        f"`{SPLUNK_BIN} bootstrap shcluster-captain -servers_list \"https://<host1>.sky.local:8089,"
         "...\" -auth admin:<password>` - DO NOT hardcode the admin password anywhere in this "
         "repo or commit history; type it only at the live terminal.",
     )

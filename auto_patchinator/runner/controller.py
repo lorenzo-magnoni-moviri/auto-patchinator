@@ -166,7 +166,7 @@ class RunController:
         self._connection_factory = connection_factory
         self._inventory = inventory
         self._dry_run = dry_run
-        self._full_auto = full_auto
+        self._locked_mode: str | None = "auto" if full_auto else None
         self._jump_target_index: int | None = None
 
     def run(self) -> None:
@@ -234,7 +234,7 @@ class RunController:
         print(bold(f"\n=== Step {excel_step} - {step_plan.verb.value.upper()} - {step_plan.label} ==="))
         _log.info("entering step %s (%s - %s)", excel_step, step_plan.verb.value, step_plan.label)
 
-        mode = "auto" if self._full_auto else self._ask_step_mode(len(pending))
+        mode = self._locked_mode if self._locked_mode is not None else self._ask_step_mode(len(pending))
         if mode == "quit":
             return "quit"
         _log.info("step %s run mode: %s", excel_step, mode)
@@ -259,23 +259,32 @@ class RunController:
         print("                          manual confirmations and failures")
         print("      [A] automatic for ALL remaining steps (stop asking)")
         print("      [t] task-by-task  - confirm every action before it runs")
+        print("      [T] task-by-task for ALL remaining steps (stop asking)")
         print("      [m] manual guide  - execute NOTHING: shows each task one at a time (command,")
         print("                          host, user, and why) and waits for you to do it by hand")
+        print("      [M] manual guide for ALL remaining steps (stop asking)")
         print("      [q] quit")
         while True:
             choice = input("    > ").strip()
             if choice == "A":
-                self._full_auto = True
+                self._locked_mode = "auto"
                 return "auto"
-            if choice.lower() == "a":
-                return "auto"
-            if choice.lower() == "t":
+            if choice == "T":
+                self._locked_mode = "task"
                 return "task"
-            if choice.lower() == "m":
+            if choice == "M":
+                self._locked_mode = "manual"
                 return "manual"
-            if choice.lower() == "q":
+            lowered = choice.lower()
+            if lowered == "a":
+                return "auto"
+            if lowered == "t":
+                return "task"
+            if lowered == "m":
+                return "manual"
+            if lowered == "q":
                 return "quit"
-            print("    Please choose one of: a, A, t, m, q")
+            print("    Please choose one of: a, A, t, T, m, M, q")
 
     # ------------------------------------------------------------------
     # Manual guide mode

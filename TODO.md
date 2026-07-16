@@ -50,6 +50,15 @@ Open items, roughly in priority order.
   identical remaining task list + `su` hint are now shown once, with a "repeat on all
   N hosts" note, and confirmed together in one go; `i` falls back to per-host
   confirmation if one needs individual handling.
+- [x] **Captain transfer/revert instructions readability** — the manual-guide text
+  packed a numbered procedure and two long `shcluster-config` commands into one
+  run-on paragraph. Restructured with explicit line breaks so each command sits on
+  its own indented line, separate from the surrounding prose.
+- [x] **Capital-letter "lock in" for task-by-task and manual guide too** — previously
+  only `A` locked automatic mode for the rest of the run (`--full-auto-mode` did the
+  same from the start). `T` and `M` now do the same for task-by-task and manual
+  guide respectively (`RunController._locked_mode` generalizes the old `_full_auto`
+  boolean to hold any of the three modes).
 
 ---
 

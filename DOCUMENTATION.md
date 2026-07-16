@@ -507,7 +507,7 @@ automated. The tool shows the exact command templates; it does not run them.
 ## 9. The three run modes
 
 Asked once at the start of every Excel step (unless `--full-auto-mode` is set, which
-locks in automatic for the whole run):
+locks in automatic for the whole run from the start):
 
 ```
     9 pending action(s). How do you want to run this step?
@@ -515,10 +515,17 @@ locks in automatic for the whole run):
                           manual confirmations and failures
       [A] automatic for ALL remaining steps (stop asking)
       [t] task-by-task  - confirm every action before it runs
+      [T] task-by-task for ALL remaining steps (stop asking)
       [m] manual guide  - execute NOTHING: shows each task one at a time (command,
                           host, user, and why) and waits for you to do it by hand
+      [M] manual guide for ALL remaining steps (stop asking)
       [q] quit
 ```
+
+Each mode's capital variant (`A`/`T`/`M`) works the same way: it locks that mode into
+`RunController._locked_mode`, so the question is skipped for every subsequent step in
+the run — useful once you're confident the rest of the wave can run the same way. The
+lowercase variant only applies to the current step; you'll be asked again next time.
 
 ### Automatic (`a` / `A`)
 
@@ -537,14 +544,14 @@ Pauses only for:
   shown with the exact command/instructions and a `press ENTER when done` prompt.
 - **Failures** — a red block plus retry menu (see below).
 
-### Task-by-task (`t`)
+### Task-by-task (`t` / `T`)
 
 Confirms every single action before running it:
 `[r]un [d] mark done manually [s]kip [b]ack [j]ump <step> [q]uit`.
 Useful when you want to inspect each command before it fires, or step through slowly
 during a first live run.
 
-### Manual guide (`m`)
+### Manual guide (`m` / `M`)
 
 **Executes nothing.** Presents the pending tasks for a single host as before, but
 **hosts sharing an identical remaining task list and `su` hint are batched**: shown

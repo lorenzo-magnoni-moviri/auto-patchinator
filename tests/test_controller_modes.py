@@ -138,6 +138,50 @@ def test_build_host_groups_separates_different_profiles(tmp_path, inventory, mon
     assert not any(len(names) > 1 for names in grouped_hostsets)  # no overlap here
 
 
+def _two_step_dp01_plan(inventory):
+    """A stop step + a start step depending on it (both internal, no external-dep
+    prompt), single host dp01 - used to test that a capital-letter mode choice
+    sticks across steps without re-asking."""
+    rows = [
+        make_raw(2, "Stop application Group 1"),
+        make_raw(4, "Start application Group 1", deps=(2,)),
+    ]
+    mapped, _ = map_team_steps(rows, TEAM)
+    return build_run_plan(resolve_order(mapped), {1: ("dp01",)}, inventory)
+
+
+def test_capital_T_locks_task_mode_for_all_remaining_steps(tmp_path, inventory, monkeypatch, capsys):
+    plan = _two_step_dp01_plan(inventory)
+    state = store.build_initial_state("t", "p.xlsx", "s", plan)
+    # 'T' once, then 'd' (mark done manually) for every action of both steps:
+    # step 2 = 3 dp01 actions + send_mail = 4; step 4 = 4 dp01 actions + send_mail = 5
+    feed = iter(["T"] + ["d"] * 9)
+    monkeypatch.setattr("builtins.input", lambda *_: next(feed))
+    ctrl = RunController(plan, state, str(tmp_path), ExplodingConnectionFactory(), inventory)
+    ctrl.run()
+
+    assert ctrl.state.is_complete()
+    assert ctrl._locked_mode == "task"
+    out = capsys.readouterr().out
+    assert out.count("How do you want to run this step?") == 1  # only asked once, for step 2
+
+
+def test_capital_M_locks_manual_guide_for_all_remaining_steps(tmp_path, inventory, monkeypatch, capsys):
+    plan = _two_step_dp01_plan(inventory)
+    state = store.build_initial_state("t", "p.xlsx", "s", plan)
+    # 'M' once, then one ENTER per (host-group, post-group) block across both steps
+    feed = iter(["M", "", "", "", ""])
+    monkeypatch.setattr("builtins.input", lambda *_: next(feed))
+    ctrl = RunController(plan, state, str(tmp_path), ExplodingConnectionFactory(), inventory)
+    ctrl.run()
+
+    assert ctrl.state.is_complete()
+    assert ctrl._locked_mode == "manual"
+    out = capsys.readouterr().out
+    assert out.count("How do you want to run this step?") == 1
+    assert out.count("MANUAL GUIDE") == 2  # printed once per step, not just once overall
+
+
 def test_su_hint_uses_role_specific_command(tmp_path, inventory, monkeypatch):
     ctrl = _controller(tmp_path, inventory, [], monkeypatch)
     assert ctrl._su_hint("ix01", Identity.SPLUNK) == "sudo /bin/su - splunk -s /bin/bash"

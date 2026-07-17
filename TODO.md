@@ -75,6 +75,12 @@ Open items, roughly in priority order.
   only (`\033[H\033[2J`, not `\033[3J`) at the start of every step - scrollback is
   untouched, so the operator can still scroll up to review earlier steps. No-op when
   stdout isn't a real terminal.
+- [x] **Verified + documented native Windows support** — audited the codebase for
+  POSIX-only calls (`pty`/`fcntl`/`termios`/`os.fork`/etc.) - none exist; every SSH
+  command is a string addressed to the remote Linux hosts, irrelevant to the local OS.
+  Added a "Running on Windows" section to README (setup command differences, `.env`
+  permissions without `chmod`, the `NO_COLOR` fallback for older `cmd.exe` consoles)
+  plus pointers from DOCUMENTATION.md and a caution in CLAUDE.md to keep it that way.
 
 ---
 
@@ -181,6 +187,11 @@ Open items, roughly in priority order.
 ---
 
 ## Nice-to-have / v2
+
+- [ ] **Windows CI job** — `.github/workflows/ci.yml` only runs on `ubuntu-latest`
+  today. Windows support is code-reviewed and documented (see "Recently done" above)
+  but not automatically tested; add a `windows-latest` entry to the job matrix if it's
+  ever worth the extra CI minutes.
 
 - [ ] **Containerize the app** — package the tool as a Docker image so it can run
   without a local Python/venv setup. Things to work out:

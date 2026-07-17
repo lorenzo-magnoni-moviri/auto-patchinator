@@ -96,6 +96,14 @@ Requires Python 3.10+. Runtime dependencies: `openpyxl` (Excel), `PyYAML` (inven
 Works from any Linux host or WSL that has network access to the PAS gateway — no agent
 needs to be installed on the target Splunk nodes themselves.
 
+**Native Windows (no WSL) works too** — there's no POSIX-only code in the tool (no
+`pty`/`fcntl`/`termios`; every SSH command is a string addressed to the remote Linux
+hosts, irrelevant to the local OS), so behavior is functionally identical. Only the
+setup commands differ (`.venv\Scripts\Activate.ps1` instead of `source
+.venv/bin/activate`, no `chmod` equivalent for `.env`) and older `cmd.exe` consoles may
+need `NO_COLOR` if ANSI colors don't render — see README's "Running on Windows" section
+for the full walkthrough.
+
 ---
 
 ## 4. Configuration

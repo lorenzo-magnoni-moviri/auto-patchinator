@@ -45,6 +45,58 @@ status polling; see `TODO.md`). Nothing in the tool reads them yet.
 
 ---
 
+## Running on Windows
+
+If you're on **WSL**, ignore this section — it's a real Linux userspace, so every
+command above already works as written.
+
+For **native Windows** (PowerShell/cmd, no WSL): the tool is pure Python with
+cross-platform dependencies (`openpyxl`, `PyYAML`, `paramiko`, `python-dotenv`) — there
+is no POSIX-only code anywhere in it (no `pty`/`fcntl`/`termios`, no shelling out to
+Unix tools). Every SSH command it sends is a *string* addressed to the remote Linux
+Splunk hosts (`/opt/splunk/bin/splunk stop`, `sudo su - splunk`, etc.) — those paths
+live on the target servers, not on your machine, so they don't care which OS is running
+the tool. **Functionally, everything behaves identically on native Windows.** Only the
+setup commands differ:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e .
+```
+
+If PowerShell blocks the activation script with an execution-policy error, either run
+`Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` first, or activate via
+`.venv\Scripts\activate.bat` from `cmd.exe` instead.
+
+**Credentials:** `copy .env.example .env`, then edit it the same way. Windows has no
+`chmod` — NTFS permissions work differently — so there's no direct equivalent of
+`chmod 600`; at minimum keep `.env` under your own user profile (not a shared/network
+drive) and rely on the default per-user NTFS permissions there. `.env` is gitignored
+either way — never commit it.
+
+**Colors and the animated `...` progress indicator** both auto-disable when stdout
+isn't a real terminal, same as on Linux. On a real terminal, **Windows Terminal** and
+**PowerShell 7+** render everything correctly out of the box. The legacy `cmd.exe`
+console on older Windows builds may not have virtual-terminal processing on by default,
+which would show raw escape codes (e.g. `\x1b[32m`) instead of actual color — if that
+happens, switch to Windows Terminal (free, Microsoft Store) or set the `NO_COLOR`
+environment variable to fall back to plain text.
+
+**WinSSH vs. this tool's own SSH — not the same thing:** manual guide mode never prints
+an `ssh` command because the team connects to hosts by hand via **WinSSH** (a
+GUI/PuTTY-style client), not a terminal `ssh` invocation. That's separate from *this
+tool's* own connection: a live (non-`--dry-run`) run uses `paramiko` (a pure-Python SSH
+library) internally to reach the PAS gateway — it never shells out to `ssh.exe`, WinSSH,
+or PuTTY, so nothing extra needs installing; `pip install -e .` is all either OS needs.
+
+Everything else — `run`, `--dry-run`, `check-connectivity`, all three run modes, the
+state/log/report files, `pytest` — behaves identically on Windows. The one thing not
+yet verified there specifically is the CI workflow, which only runs on `ubuntu-latest`
+today (see `TODO.md` if a Windows CI job ever becomes worth adding).
+
+---
+
 ## Files you maintain
 
 ### `inventory/hosts.yaml`

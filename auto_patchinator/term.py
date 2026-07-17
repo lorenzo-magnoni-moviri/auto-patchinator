@@ -24,6 +24,7 @@ green = _wrap("32")
 red = _wrap("31;1")
 yellow = _wrap("33")
 bold = _wrap("1")
+cyan = _wrap("1;36")  # literal commands the operator should type/paste verbatim
 
 
 class _StaticLine:

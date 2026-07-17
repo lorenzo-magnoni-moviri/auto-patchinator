@@ -147,14 +147,18 @@ def _inject_captain_actions(
     result = list(plans)
     if first_stop_idx is not None:
         p = result[first_stop_idx]
+        other_site = _other_site(p)
+        captain_host = inventory.captain_candidate(other_site)
         result[first_stop_idx] = dataclasses.replace(
             p,
-            pre_group_actions=(captain_transfer_static(_other_site(p)),) + p.pre_group_actions,
+            pre_group_actions=(captain_transfer_static(other_site, captain_host),) + p.pre_group_actions,
         )
     if last_start_idx is not None:
         p = result[last_start_idx]
+        captain_host = inventory.captain_candidate(_other_site(p))
+        all_hosts = inventory.stretched_sh_hostnames()
         result[last_start_idx] = dataclasses.replace(
             p,
-            post_group_actions=p.post_group_actions + (captain_revert_dynamic(),),
+            post_group_actions=p.post_group_actions + (captain_revert_dynamic(captain_host, all_hosts),),
         )
     return result

@@ -484,16 +484,23 @@ Start half mirrors it, ending with `manual_todo: enable_streamsets_pipelines` th
 
 ### Captain transfer (stretched search-head cluster)
 
-Injected **once per wave**, not per group (see [§6.6](#66-run_planpy)):
+Injected **once per wave**, not per group (see [§6.6](#66-run_planpy)). The instructions
+name a **concrete** host, not a `<placeholder>`: `Inventory.captain_candidate(site)`
+picks the lowest-numbered stretched-SH hostname on the site *not* being patched (e.g.
+`prdrmlbbspksh01`), and the same host is referenced consistently in both the transfer
+and the revert message so the operator doesn't have to track it themselves:
 
 - **Before the first stretched-SH stop in the wave** — manual step: on the chosen new
-  captain (a host on the site **not** being patched), run
-  `<bin> edit shcluster-config -mode captain -captain_uri https://<new-captain>.sky.local:8089 -election false`;
+  captain (the concrete host above), run
+  `<bin> edit shcluster-config -mode captain -captain_uri https://<that-host>.sky.local:8089 -election false`;
   then on every *other* search head in the whole cluster (both sites), run the member
   variant of the same command.
 - **After the last stretched-SH start in the wave** — manual step: re-enable dynamic
-  election on every member except the current captain, then the captain itself; then
-  from the captain, `bootstrap shcluster-captain -servers_list "..." -auth admin:<password>`.
+  election on every member except the current captain (the same concrete host), then
+  the captain itself; then from that host,
+  `bootstrap shcluster-captain -servers_list "https://host1.sky.local:8089,..." -auth admin:<password>`
+  — the server list is the actual full set of stretched-SH hostnames across both sites
+  (`Inventory.stretched_sh_hostnames()`), not a placeholder either.
   **The admin password is never stored in this repo — type it only at the live
   terminal when performing this step.**
 
@@ -581,6 +588,15 @@ tstmilbbspksh03, tstmilbbspksh04, tstmilbbspksh05
     Once you've done the above IDENTICALLY on ALL 5 hosts, press ENTER to confirm
       (or: [i] confirm host-by-host instead  [s] skip all  [l] list all tasks  [q] quit)
 ```
+
+Every literal command the operator needs to type or paste — the `become <identity>
+with: ...` `su` line, each task's `run :` line, and any command embedded in a manual
+step's instructions (e.g. the `shcluster-config`/`bootstrap` commands in the captain
+transfer/revert text) — is printed in **bold cyan** (`term.py`'s `cyan` helper,
+auto-disabled on a non-tty same as the other colors) so it stands out from the
+surrounding prose/rationale text at a glance. For `MANUAL`-kind actions, `_guide_what`
+treats any note line indented 3+ spaces as a literal command to highlight and
+everything else as plain instructional text.
 
 The grouping (`RunController._host_profile` / `_build_host_groups`) compares each host's
 exact remaining action sequence (name/kind/command/script — identical for same-role

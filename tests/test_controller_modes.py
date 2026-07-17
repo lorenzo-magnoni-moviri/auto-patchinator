@@ -191,6 +191,20 @@ def test_su_hint_uses_role_specific_command(tmp_path, inventory, monkeypatch):
 def test_guide_what_renders_interactive_scripts(tmp_path, inventory, monkeypatch):
     ctrl = _controller(tmp_path, inventory, [], monkeypatch)
     lines = ctrl._guide_what(disable_crontab())
-    assert lines[0].startswith("crontab -r")
-    assert "really delete" in lines[0]
-    assert lines[1] == "yes"
+    assert lines[0][0].startswith("crontab -r")
+    assert "really delete" in lines[0][0]
+    assert lines[0][1] is True  # command line, gets highlighted
+    assert lines[1] == ("yes", True)
+
+
+def test_guide_what_flags_plain_commands_and_manual_prose(tmp_path, inventory, monkeypatch):
+    from auto_patchinator.actions.sequences import stop_splunk, SPLUNK_BIN
+    from auto_patchinator.actions.sequences import manual_todo
+
+    ctrl = _controller(tmp_path, inventory, [], monkeypatch)
+    assert ctrl._guide_what(stop_splunk(SPLUNK_BIN)) == [(f"sudo {SPLUNK_BIN} stop", True)]
+
+    action = manual_todo("x", "Do this thing (as the splunk user):\n   sudo /opt/splunk/bin/splunk stop")
+    lines = ctrl._guide_what(action)
+    assert lines[0] == ("TODO: Do this thing (as the splunk user):", False)
+    assert lines[1] == ("sudo /opt/splunk/bin/splunk stop", True)

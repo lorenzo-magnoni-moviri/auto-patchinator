@@ -36,7 +36,7 @@ from auto_patchinator.state.models import (
     ActionStatus,
     RunState,
 )
-from auto_patchinator.term import bold, green, progress_line, red, yellow
+from auto_patchinator.term import bold, cyan, green, progress_line, red, yellow
 
 
 class Connection(Protocol):
@@ -298,18 +298,29 @@ class RunController:
         return su_command(identity, host.role)
 
     @staticmethod
-    def _guide_what(action: Action) -> list[str]:
+    def _guide_what(action: Action) -> list[tuple[str, bool]]:
+        """Returns [(line, is_command), ...] - is_command lines get highlighted as
+        literal text to type/paste, distinguishing them from surrounding instructions."""
         if action.kind == ActionKind.PLAIN:
-            return [action.command]
+            return [(action.command, True)]
         if action.kind == ActionKind.INTERACTIVE:
             lines = []
             for step in action.script:
                 expect = f"   (wait for: {step.expect!r})" if step.expect else ""
-                lines.append(f"{step.send}{expect}")
+                lines.append((f"{step.send}{expect}", True))
             return lines
         if action.kind == ActionKind.WAIT:
-            return [f"wait {action.wait_seconds}s - {action.note}"]
-        return (action.note or action.name).splitlines()
+            return [(f"wait {action.wait_seconds}s - {action.note}", False)]
+        # MANUAL: lines indented 3+ spaces in the source note are literal commands
+        # (see sequences.py's captain_transfer_static/captain_revert_dynamic); everything
+        # else is instructional prose, left unhighlighted.
+        result = []
+        for line in (action.note or action.name).splitlines():
+            if line.startswith("   "):
+                result.append((line.strip(), True))
+            else:
+                result.append((line, False))
+        return result
 
     def _print_guide_scope_header(self, scope: str, actions: list[Action]) -> None:
         if scope in (PRE_GROUP_SCOPE, POST_GROUP_SCOPE):
@@ -320,7 +331,7 @@ class RunController:
         print(bold(f"\n    On host {scope} ({host.role.value}, site {host.site}):"))
         for identity in dict.fromkeys(a.identity for a in actions if a.identity is not None):
             forced = "  [CyberArk GUI only - no SSH]" if host.is_manual_only(identity) else ""
-            print(f"      become {identity.value} with: {self._su_hint(scope, identity)}{yellow(forced)}")
+            print(f"      become {identity.value} with: {cyan(self._su_hint(scope, identity))}{yellow(forced)}")
 
     def _print_guide_group_header(self, hostnames: list[str], actions: list[Action]) -> None:
         """Same as _print_guide_scope_header, but for a batch of hosts sharing an
@@ -337,7 +348,7 @@ class RunController:
         ))
         for identity in dict.fromkeys(a.identity for a in actions if a.identity is not None):
             forced = "  [CyberArk GUI only - no SSH]" if representative.is_manual_only(identity) else ""
-            print(f"      become {identity.value} with: {self._su_hint(hostnames[0], identity)}{yellow(forced)}")
+            print(f"      become {identity.value} with: {cyan(self._su_hint(hostnames[0], identity))}{yellow(forced)}")
         print(yellow(
             f"      Repeat the {len(actions)} task(s) below IDENTICALLY on EACH of these "
             f"{len(hostnames)} hosts."
@@ -348,9 +359,10 @@ class RunController:
         kind_note = "  (manual step)" if action.kind == ActionKind.MANUAL else ""
         print(f"\n      task {number}/{total}: {action.name}  [user: {who}]{kind_note}")
         what = self._guide_what(action)
-        print(f"         run : {what[0]}")
-        for extra in what[1:]:
-            print(f"               {extra}")
+        first_text, first_is_cmd = what[0]
+        print(f"         run : {cyan(first_text) if first_is_cmd else first_text}")
+        for extra_text, extra_is_cmd in what[1:]:
+            print(f"               {cyan(extra_text) if extra_is_cmd else extra_text}")
         why = _GUIDE_DESCRIPTIONS.get(action.name) or (
             action.note if action.kind != ActionKind.MANUAL else None
         )
@@ -361,7 +373,8 @@ class RunController:
         print(yellow("\n    All tasks in this step, in order:"))
         for number, (scope, action, action_state) in enumerate(pending, start=1):
             who = action.identity.value if action.identity else "operator"
-            what = self._guide_what(action)[0]
+            what, what_is_cmd = self._guide_what(action)[0]
+            what = cyan(what) if what_is_cmd else what
             marker = {
                 ActionStatus.SUCCESS: " [done]",
                 ActionStatus.SKIPPED: " [skipped]",

@@ -59,6 +59,16 @@ Open items, roughly in priority order.
   same from the start). `T` and `M` now do the same for task-by-task and manual
   guide respectively (`RunController._locked_mode` generalizes the old `_full_auto`
   boolean to hold any of the three modes).
+- [x] **Concrete captain-transfer hostnames instead of `<placeholder>`s** —
+  `Inventory.captain_candidate(site)` picks the lowest-numbered stretched-SH host on
+  the site not being patched (e.g. `prdrmlbbspksh01`), used consistently in both the
+  transfer and revert manual instructions; the revert's `-servers_list` is now the
+  actual full set of stretched-SH hostnames across both sites
+  (`Inventory.stretched_sh_hostnames()`), not `<host1>,...`.
+- [x] **Highlight literal commands in manual guide** — `su` hints, each task's `run:`
+  line, and any 3+-space-indented line inside a `MANUAL` action's note (the captain
+  transfer/revert commands) are now printed in bold cyan (`term.py`'s new `cyan`
+  helper), so it's obvious at a glance what to type/paste vs. what's just explanation.
 
 ---
 

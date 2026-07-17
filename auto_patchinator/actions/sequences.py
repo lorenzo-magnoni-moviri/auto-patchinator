@@ -214,33 +214,47 @@ def search_head_simple_sequences() -> RoleSequences:
     return RoleSequences(stop_per_node=_default_stop(SPLUNK_BIN), start_per_node=_default_start(SPLUNK_BIN))
 
 
-def captain_transfer_static(other_site_label: str) -> Action:
-    """Manual step injected once before the first stretched-SH stop in a wave."""
+def captain_transfer_static(other_site_label: str, new_captain_host: str | None) -> Action:
+    """Manual step injected once before the first stretched-SH stop in a wave.
+
+    new_captain_host is a concrete, deterministic example host on the other site
+    (Inventory.captain_candidate) - falls back to a generic placeholder if the
+    inventory has no stretched SH host there (shouldn't normally happen)."""
+    captain = new_captain_host or "<new-captain-host>"
     return manual_todo(
         "transfer_captain_static",
         "Cluster-wide, before touching this site (as the splunk user):\n"
-        f"1. On the CHOSEN NEW CAPTAIN (a host on {other_site_label}, the site NOT "
-        "being patched), run:\n"
+        f"1. On the CHOSEN NEW CAPTAIN ({captain}, a host on {other_site_label}, the "
+        "site NOT being patched), run:\n"
         f"   {SPLUNK_BIN} edit shcluster-config -mode captain "
-        "-captain_uri https://<new-captain-host>.sky.local:8089 -election false\n"
+        f"-captain_uri https://{captain}.sky.local:8089 -election false\n"
         "2. Then on EVERY OTHER search head in the whole cluster (both sites), run:\n"
         f"   {SPLUNK_BIN} edit shcluster-config -mode member "
-        "-captain_uri https://<new-captain-host>.sky.local:8089 -election false",
+        f"-captain_uri https://{captain}.sky.local:8089 -election false",
     )
 
 
-def captain_revert_dynamic() -> Action:
-    """Manual step injected once after the last stretched-SH start in a wave."""
+def captain_revert_dynamic(captain_host: str | None, all_hosts: list[str] | None = None) -> Action:
+    """Manual step injected once after the last stretched-SH start in a wave.
+
+    captain_host should be the same host captain_transfer_static suggested (the
+    temporary captain being handed back to dynamic election); all_hosts is every
+    stretched SH hostname across both sites, for a concrete -servers_list."""
+    captain = captain_host or "<the captain chosen during transfer>"
+    servers_list = (
+        ",".join(f"https://{h}.sky.local:8089" for h in all_hosts)
+        if all_hosts else "https://<host1>.sky.local:8089,..."
+    )
     return manual_todo(
         "revert_captain_dynamic",
         "Once all nodes on this site are fully back up (as the splunk user):\n"
-        "1. On every member EXCEPT the current captain, then LASTLY on the captain "
-        "itself, run:\n"
+        f"1. On every member EXCEPT the current captain ({captain}, chosen during "
+        "transfer), then LASTLY on the captain itself, run:\n"
         f"   {SPLUNK_BIN} edit shcluster-config -election true "
         "-mgmt_uri https://<that-node>.sky.local:8089\n"
-        "2. Then from the captain, run:\n"
+        f"2. Then from {captain}, run:\n"
         f"   {SPLUNK_BIN} bootstrap shcluster-captain -servers_list "
-        "\"https://<host1>.sky.local:8089,...\" -auth admin:<password>\n"
+        f"\"{servers_list}\" -auth admin:<password>\n"
         "   DO NOT hardcode the admin password anywhere in this repo or commit "
         "history - type it only at the live terminal.",
     )

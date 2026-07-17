@@ -77,6 +77,22 @@ class Inventory:
         a, b = self.stretched_sh_sites
         return b if site == a else a
 
+    def stretched_sh_hostnames(self, site: str | None = None) -> list[str]:
+        """All search_head_stretched hostnames, optionally filtered to one site, sorted
+        for a deterministic pick (e.g. the lowest-numbered host as a concrete example
+        in manual captain-transfer instructions)."""
+        return sorted(
+            h.hostname for h in self.hosts.values()
+            if h.role == NodeRole.SEARCH_HEAD_STRETCHED and (site is None or h.site == site)
+        )
+
+    def captain_candidate(self, site: str) -> str | None:
+        """A concrete, deterministic example host to suggest as the temporary captain
+        on the given site (the lowest-numbered stretched SH there), or None if the
+        inventory has no stretched SH host on that site."""
+        hosts = self.stretched_sh_hostnames(site)
+        return hosts[0] if hosts else None
+
 
 def load_inventory(path: str | Path, environment: str = "prod") -> Inventory:
     raw = yaml.safe_load(Path(path).read_text())

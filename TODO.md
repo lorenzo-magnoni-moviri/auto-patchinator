@@ -78,9 +78,15 @@ Open items, roughly in priority order.
 - [x] **Verified + documented native Windows support** — audited the codebase for
   POSIX-only calls (`pty`/`fcntl`/`termios`/`os.fork`/etc.) - none exist; every SSH
   command is a string addressed to the remote Linux hosts, irrelevant to the local OS.
-  Added a "Running on Windows" section to README (setup command differences, `.env`
-  permissions without `chmod`, the `NO_COLOR` fallback for older `cmd.exe` consoles)
-  plus pointers from DOCUMENTATION.md and a caution in CLAUDE.md to keep it that way.
+  Added a "Running on native Windows" section to `DOCUMENTATION.md` (setup command
+  differences, `.env` permissions without `chmod`, the `NO_COLOR` fallback for older
+  `cmd.exe` consoles) — README just links to it now — plus a caution in CLAUDE.md to
+  keep the codebase POSIX-call-free going forward.
+- [x] **README trimmed to a lean quick-start** — Requirements/Files-you-maintain/full
+  Commands+flags/Interactive-run-modes tables/Output-files/Architecture/Action
+  sequences/Captain transfer/Known limitations were all duplicated (in more depth) in
+  `DOCUMENTATION.md` already; README now just covers setup, a handful of example
+  commands, and a pointer to `DOCUMENTATION.md` for everything else.
 
 ---
 

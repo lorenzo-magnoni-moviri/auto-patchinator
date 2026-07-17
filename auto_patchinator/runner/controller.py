@@ -11,10 +11,14 @@ action, and lets the operator drive each major step in one of three modes:
                   hand (connecting via WinSSH) and presses ENTER to move to the
                   next one. 'l' lists all of the step's tasks at once.
 
-The mode is asked at the start of every step ([A] applies automatic to all remaining
-steps; the --full-auto-mode CLI flag skips the question entirely). Failures show in red
-with the command output and a retry-focused menu, identical in all executing modes. All
-progress is persisted after every transition so a crash/Ctrl-C can be resumed later.
+The mode is asked at the start of every step ([A]/[T]/[M] locks that mode for all
+remaining steps; the --full-auto-mode CLI flag skips the question entirely, starting
+locked to automatic). The terminal's visible screen is cleared at the start of every
+step (scrollback is left intact, so the operator can still scroll up to earlier steps)
+so each step starts from a clean screen instead of scrolling past the previous one's
+output. Failures show in red with the command output and a retry-focused menu,
+identical in all executing modes. All progress is persisted after every transition so
+a crash/Ctrl-C can be resumed later.
 """
 from __future__ import annotations
 
@@ -36,7 +40,7 @@ from auto_patchinator.state.models import (
     ActionStatus,
     RunState,
 )
-from auto_patchinator.term import bold, cyan, green, progress_line, red, yellow
+from auto_patchinator.term import bold, clear_screen, cyan, green, progress_line, red, yellow
 
 
 class Connection(Protocol):
@@ -231,6 +235,7 @@ class RunController:
         if not pending:
             return "next"
 
+        clear_screen()
         print(bold(f"\n=== Step {excel_step} - {step_plan.verb.value.upper()} - {step_plan.label} ==="))
         _log.info("entering step %s (%s - %s)", excel_step, step_plan.verb.value, step_plan.label)
 

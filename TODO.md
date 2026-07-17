@@ -69,6 +69,12 @@ Open items, roughly in priority order.
   line, and any 3+-space-indented line inside a `MANUAL` action's note (the captain
   transfer/revert commands) are now printed in bold cyan (`term.py`'s new `cyan`
   helper), so it's obvious at a glance what to type/paste vs. what's just explanation.
+- [x] **Clear screen at the start of each step** — every step used to just keep
+  scrolling past the previous one's output, making it hard to tell where the current
+  step's output starts. `term.clear_screen()` clears the terminal's **visible** screen
+  only (`\033[H\033[2J`, not `\033[3J`) at the start of every step - scrollback is
+  untouched, so the operator can still scroll up to review earlier steps. No-op when
+  stdout isn't a real terminal.
 
 ---
 

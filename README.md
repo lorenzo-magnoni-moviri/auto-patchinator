@@ -159,7 +159,9 @@ auto-patchinator check-connectivity --hosts prdmilbbspksh01 prdmilbbspksh02
 
 ## Interactive run modes
 
-At the start of each Excel step the operator chooses how to run it:
+At the start of each Excel step the terminal's visible screen clears (scrollback is
+untouched — scroll up any time to review earlier steps), then the operator chooses how
+to run it:
 
 | Key | Mode |
 |---|---|

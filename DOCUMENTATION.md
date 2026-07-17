@@ -513,8 +513,14 @@ automated. The tool shows the exact command templates; it does not run them.
 
 ## 9. The three run modes
 
-Asked once at the start of every Excel step (unless `--full-auto-mode` is set, which
-locks in automatic for the whole run from the start):
+At the start of every step, `term.clear_screen()` clears the terminal's **visible**
+screen (`\033[H\033[2J` — deliberately not `\033[3J`, which would also wipe the
+scrollback buffer) so the new step starts on a clean screen instead of scrolling past
+the previous step's output; the operator can still scroll up normally to review earlier
+steps. A no-op when stdout isn't a real terminal (piped output, tests).
+
+The mode is then asked once at the start of every Excel step (unless `--full-auto-mode`
+is set, which locks in automatic for the whole run from the start):
 
 ```
     9 pending action(s). How do you want to run this step?

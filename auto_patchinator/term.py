@@ -74,3 +74,12 @@ class _AnimatedDots:
 def progress_line(prefix: str):
     """Context manager: show `prefix ... ` while the body runs, dots pulsing on a tty."""
     return _AnimatedDots(prefix) if sys.stdout.isatty() else _StaticLine(prefix)
+
+
+def clear_screen() -> None:
+    """Clear the visible terminal screen (not the scrollback buffer - the operator can
+    still scroll up normally to review earlier steps) before starting a new step, so
+    its output isn't lost in the previous step's. No-op when stdout isn't a real
+    terminal (piped/redirected output, e.g. captured in a log or a test)."""
+    if sys.stdout.isatty():
+        print("\033[H\033[2J", end="")

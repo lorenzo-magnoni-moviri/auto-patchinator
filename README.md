@@ -21,7 +21,18 @@ pip install -e .
 cp .env.example .env   # fill in AP_USERNAME / AP_PASSWORD, then: chmod 600 .env
 ```
 
-Native Windows (no WSL)? See `DOCUMENTATION.md`'s Installation section.
+Native Windows (no WSL) — PowerShell:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e .
+
+copy .env.example .env   # fill in AP_USERNAME / AP_PASSWORD
+```
+
+See `DOCUMENTATION.md`'s Installation section for the execution-policy fix if
+activation is blocked, and other Windows-specific notes (`.env` permissions, colors).
 
 Copy `inventory/hosts.example.yaml` to `inventory/hosts.yaml` and fill in your hosts if
 you haven't already — see `DOCUMENTATION.md` for the field reference.

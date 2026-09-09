@@ -31,8 +31,10 @@ recent operational testing see `TODO.md`.
 
 Sky ITA's Broadband & Talk monitoring platform runs on Splunk. Every month, a
 company-wide OS patching wave touches every server in the estate — including the
-Splunk nodes owned by the "AOM Sky CSO" / "AOM Splunk Broadband" team (referred to
-throughout the code and this doc as simply "our team" or "the Splunk BB team").
+Splunk nodes owned by our team (referred to throughout the code and this doc as simply
+"our team" or "the Splunk BB team"). The Excel's `Gruppo_referente` label for our rows
+isn't consistent month to month — seen so far as "AOM Sky CSO", "AOM Splunk Broadband",
+and "Splunk Broadband" — so `--team-filter` matches any of those (see [§5](#5-cli-reference)).
 
 Each wave is described by a **Vulnerability Plan Excel file** produced by IT-SA (the
 security/patching coordination team). It lists, in dependency order, every step of the
@@ -73,8 +75,8 @@ but not assuming familiarity with PAS/CyberArk or this specific Sky infrastructu
 | **Identity** | Which user you become on the target host after logging in via PAS: `splunk` or `root`. Encoded directly in the PAS login username. |
 | **su** | After the PAS login, the tool still runs `sudo su - splunk` (or `root`, or an indexer-specific variant) to actually become that user on the target host. |
 | **shcluster / captain** | Splunk's search-head clustering feature. The stretched search-head cluster spans two physical sites (Milano and Roma) with one node acting as "captain" at a time. Captain transfer/revert around a wave is handled as a manual step — see [§8](#8-action-sequences-per-role). |
-| **KV store** | Splunk's built-in key-value store, cleaned locally on stretched search heads after a restart so it resyncs cleanly from the cluster. |
-| **boot-start** | Splunk's systemd integration (`splunk enable/disable boot-start`). Regenerates a systemd unit file from a template, which is why the tool has to back up and restore a hand-edited copy around it — see [§8](#8-action-sequences-per-role). |
+| **KV store** | Splunk's built-in key-value store, cleaned locally on stretched search heads while Splunk is still down (before it's started back up) so it resyncs cleanly from the cluster. |
+| **boot-start** | Splunk's systemd integration (`splunk enable/disable boot-start`). Regenerates a systemd unit file from a template; a systemd override (drop-in) file holds each node's customizations so nothing is lost — see [§8](#8-action-sequences-per-role). |
 | **Manual guide mode** | One of the three run modes; executes nothing, just tells the operator what to do and waits. See [§9](#9-the-three-run-modes). |
 | **Dry-run** | `--dry-run`: simulates every action (no SSH at all) so you can sanity-check a resolved plan safely. |
 | **Role** | One of `deployer`, `indexer`, `forwarder`, `search_head_simple`, `search_head_stretched` — determines which action sequence a host gets. Configured per host in `inventory/hosts.yaml`. |
@@ -242,13 +244,15 @@ Two subcommands: `run` and `check-connectivity`.
 |---|---|---|
 | `--excel PATH` | prompts interactively | See [§4.3](#43-the-wave-excel-file). |
 | `--inventory PATH` | `inventory/hosts.yaml` | Errors clearly if the default doesn't exist and nothing was passed. |
-| `--plan-sheet NAME` | `Plan` | Rarely needs changing. |
-| `--host-sheet NAME` | `List Host NO IT` | Override if a wave's host sheet is named unusually and the substring match fails. |
-| `--team-filter FILTER [FILTER ...]` | `AOM Sky CSO`, `AOM Splunk Broadband` | `Gruppo_referente` values to match, case-insensitive. |
+| `--plan-sheet NAME` | `Plan` | Tolerates incidental trailing whitespace in the sheet's actual name (e.g. `'Plan '`); override if it's still not found, or if there's more than one sheet that could match (raises rather than guessing). |
+| `--host-sheet NAME` | `List Host NO IT` | Override if a wave's host sheet is named unusually and the substring match fails, or if the workbook keeps a stale `_old` copy alongside the current one and both look ambiguous (raises rather than guessing which is current). |
+| `--team-filter FILTER [FILTER ...]` | `AOM Sky CSO`, `AOM Splunk Broadband`, `Splunk Broadband` | `Gruppo_referente` values to match, case-insensitive. If a future wave uses yet another label and zero rows match, the tool warns and lists every label actually found in the sheet rather than silently resolving to an empty plan. |
 | `--environment {prod,test}` | `prod` | Filters `hosts.yaml` and selects the matching PAS suffixes. |
 | `--pas-gateway HOST[:PORT]` | from `hosts.yaml`'s `pas_gateway` | Only needed to override the inventory default for one run. |
 | `--dry-run` | off (i.e. **live** by default) | Simulates every action, no SSH, no credentials prompt. |
 | `--full-auto-mode` | off | Skips the per-step mode question; every step runs in automatic mode. |
+| `--verbose` | off | Manual guide's "why" line, pre-decided instead of asked interactively the first time manual guide is used. See [§9](#9-the-three-run-modes). |
+| `--max-parallel-hosts N` | `1` (sequential) | Automatic mode only - run up to `N` hosts' action lists concurrently within a step instead of one at a time. See [§9](#9-the-three-run-modes). |
 | `--state-dir DIR` | `state` | |
 | `--reports-dir DIR` | `reports` | |
 | `--logs-dir DIR` | `logs` | |
@@ -496,13 +500,11 @@ be slow).
 | Action | Identity | Command | Notes |
 |---|---|---|---|
 | `stop_splunk` | splunk | `sudo <bin> stop` | |
-| `backup_systemd_unit` | root | `cp /etc/systemd/system/Splunkd.service /appl/home/splunk/Splunkd.service.copy` | Must happen **before** `disable_boot_start` — preserves the hand-edited unit file. |
 | `disable_boot_start` | splunk | `sudo <bin> disable boot-start` | If splunk has no sudoers entry for this on a given node, rerun as root (no sudo) instead. |
-| `enable_boot_start` | root | `<bin> enable boot-start -systemd-managed 1 -user splunk -group splunk` | **Regenerates** the unit file from a template — the edited copy must be restored right after. |
-| `restore_systemd_unit` | root | `cat /appl/home/splunk/Splunkd.service.copy > /etc/systemd/system/Splunkd.service` | Deliberately `cat >`, not `rm`+`cp` — replacing the inode breaks systemd's cached unit state/file watch. |
+| `enable_boot_start` | root | `<bin> enable boot-start -systemd-managed 1 -user splunk -group splunk` | **Regenerates** the unit file from a template — a systemd override (drop-in) file holds the node's customizations, so nothing is lost; no backup/restore step needed. |
 | `daemon_reload` | root | `systemctl daemon-reload` | |
+| `clean_kvstore` | splunk | `<bin> clean kvstore --local` | Stretched search heads only; runs **before** `start_splunk`, while Splunk is still down. |
 | `start_splunk` | splunk | `sudo <bin> start` | |
-| `clean_kvstore` | splunk | `<bin> clean kvstore --local` | Stretched search heads only. |
 | `backup_crontab` | splunk | `crontab -l > /appl/home/splunk/crontab.backup` | Forwarders only; must precede `disable_crontab`. |
 | `disable_crontab` | splunk | interactive: `crontab -r` → expect `"really delete"` → send `yes` | The splunk user's `crontab` is aliased to `crontab -i`, which asks for confirmation before deleting. |
 | `enable_crontab` | splunk | `crontab /appl/home/splunk/crontab.backup` | |
@@ -514,18 +516,18 @@ be slow).
 
 | Role | Stop sequence | Start sequence |
 |---|---|---|
-| `deployer` | stop → backup unit → disable boot-start | enable boot-start → restore unit → daemon-reload → start |
+| `deployer` | stop → disable boot-start | enable boot-start → daemon-reload → start |
 | `indexer` | same as deployer, indexer `<bin>` | same as deployer, indexer `<bin>` (S&R factor wait-and-check deferred to v2, see [§16](#16-roadmap)) |
-| `forwarder` | **backup crontab** → disable crontab → stop → backup unit → disable boot-start | enable boot-start → restore unit → daemon-reload → start → **restore crontab** |
+| `forwarder` | **backup crontab** → disable crontab → stop → disable boot-start | enable boot-start → daemon-reload → start → **restore crontab** |
 | `search_head_simple` | same as deployer | same as deployer (no KV-store clean, no captain handling — this is the separate 3-node cluster, not the stretched one) |
-| `search_head_stretched` | same as deployer | same as deployer, **+ clean_kvstore** at the end |
+| `search_head_stretched` | same as deployer | enable boot-start → daemon-reload → **clean_kvstore** → start (KV store is cleaned while Splunk is still down, not after starting it) |
 
 `prdmilbbspkfw02` (host override, replaces the forwarder sequence entirely):
 1. `backup_crontab`
 2. `disable_crontab`
 3. `wait(180s)` — "allow in-flight cron jobs to finish before touching StreamSets"
 4. `manual_todo: disable_streamsets_pipelines` — placeholder, exact command not yet known
-5. stop → backup unit → disable boot-start
+5. stop → disable boot-start
 
 Start half mirrors it, ending with `manual_todo: enable_streamsets_pipelines` then
 `enable_crontab`.
@@ -578,7 +580,7 @@ is set, which locks in automatic for the whole run from the start):
       [t] task-by-task  - confirm every action before it runs
       [T] task-by-task for ALL remaining steps (stop asking)
       [m] manual guide  - execute NOTHING: shows each task one at a time (command,
-                          host, user, and why) and waits for you to do it by hand
+                          host, user) and waits for you to do it by hand
       [M] manual guide for ALL remaining steps (stop asking)
       [q] quit
 ```
@@ -595,7 +597,6 @@ command is in flight:
 
 ```
 [tstmilbbspksh01] stopping splunk ...                DONE (12s)
-[tstmilbbspksh01] backing up systemd unit ...        DONE
 [tstmilbbspksh01] disabling boot-start ...            DONE
 ```
 
@@ -604,6 +605,49 @@ Pauses only for:
   transfer/revert, any action on a `manual_identities` host, StreamSets placeholders) —
   shown with the exact command/instructions and a `press ENTER when done` prompt.
 - **Failures** — a red block plus retry menu (see below).
+
+**Connection reuse.** Within a step, automatic mode opens one SSH connection per
+(host, identity) and reuses it across that host's whole action list, instead of a fresh
+PAS-gateway login + `su` handshake for every action - a role with several actions
+across both identities (e.g. `search_head_stretched`'s start sequence: `enable_boot_start`
++ `daemon_reload` as root, `clean_kvstore` + `start_splunk` as splunk) used to pay 4 full
+logins per host; now it pays 2. Never carried into another step - the host may be
+rebooted by another team's OS-patch action between a "Stop" step and its later "Start"
+step, so nothing is assumed to survive past the step it was opened for. A retry after a
+failed command drops and reopens that identity's connection rather than reusing one that
+might be dead. Task-by-task and manual guide don't do this - manual guide executes
+nothing, and task-by-task's back/jump navigation doesn't fit the "one contiguous block
+per host" assumption this relies on.
+
+**`--max-parallel-hosts N`** (default `1`, i.e. today's fully sequential behavior) runs
+up to `N` hosts' action lists concurrently within a step instead of one host at a time -
+a `ThreadPoolExecutor`, one worker per host; pre-/post-group actions always stay
+sequential barriers before/after, and a step with only one host never spins up a thread
+pool regardless of `N`. Output changes shape slightly once more than one host might be
+printing at once - each action gets two plain lines (start, then result) instead of the
+single animated line, so concurrent hosts' output can never interleave mid-line:
+
+```
+[tstmilbbspksh01] stopping splunk ...
+[tstmilbbspksh02] stopping splunk ...
+[tstmilbbspksh01] stopping splunk DONE (11s)
+[tstmilbbspksh02] stopping splunk DONE (13s)
+```
+
+A failure's red block and retry menu, and any manual confirmation, still show exactly
+as before - just serialized so only one host's prompt is ever on screen (and reading
+stdin) at a time; other hosts keep running in the background and their output queues
+behind it briefly. Choosing quit from one host's prompt stops every other host before
+its *next* action - an action already in flight always finishes, nothing is killed
+mid-SSH.
+
+Default is `1` because the PAS/CyberArk gateway's tolerance for concurrent sessions from
+one account isn't established - `executor/ssh.py`'s connect-retry delay is already tuned
+around gateway-side rate-limiting, and repeated connectivity testing has previously
+looked like it triggered an account's failed-attempt lockout counter (see
+[§13](#13-known-issues-and-operational-findings)). Start with a conservative `N` (e.g.
+2-3) on a live wave and watch for unexpected auth failures or slow gateway responses
+before pushing it higher.
 
 ### Task-by-task (`t` / `T`)
 
@@ -624,18 +668,13 @@ together in one go — no need to page through the same 3-command sequence 5 tim
 On 5 hosts (search_head_stretched, site milano): tstmilbbspksh01, tstmilbbspksh02,
 tstmilbbspksh03, tstmilbbspksh04, tstmilbbspksh05
   become splunk with: sudo su - splunk
-  become root with: sudo su - root
-  Repeat the 3 task(s) below IDENTICALLY on EACH of these 5 hosts.
+  Repeat the 2 task(s) below IDENTICALLY on EACH of these 5 hosts.
 
-  task 1/3: stop_splunk  [user: splunk]
+  task 1/2: stop_splunk  [user: splunk]
      run : sudo /opt/splunk/bin/splunk stop
      why : Stop the Splunk process cleanly before the OS is patched.
 
-  task 2/3: backup_systemd_unit  [user: root]
-     run : cp /etc/systemd/system/Splunkd.service /appl/home/splunk/Splunkd.service.copy
-     why : ...
-
-  task 3/3: disable_boot_start  [user: splunk]
+  task 2/2: disable_boot_start  [user: splunk]
      run : sudo /opt/splunk/bin/splunk disable boot-start
      why : ...
 

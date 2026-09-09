@@ -48,6 +48,35 @@ def test_no_matching_sheet_raises(tmp_path: Path, inventory):
         load_wave_mapping_from_excel(path, inventory)
 
 
+def test_prefers_current_sheet_over_a_stale_old_one(tmp_path: Path, inventory):
+    """A workbook can keep a previous month's host sheet alongside the current one
+    (e.g. 'Host List NO IT_old' next to 'Host List NO IT_23on24_07') - the stale one
+    must never be silently picked over the current one."""
+    path = write_workbook(tmp_path / "w.xlsx", {
+        "Host List NO IT_old": [
+            ["=SUBTOTAL(3,A3:A3)"],
+            ["Computer", "Hostname", "Groups"],
+            ["dp01.sky.local", "STALE_HOSTNAME", 1],
+        ],
+        "Host List NO IT_23on24_07": [
+            ["=SUBTOTAL(3,A3:A3)"],
+            ["Computer", "Hostname", "Groups"],
+            ["dp01.sky.local", "dp01", 1],
+        ],
+    })
+    mapping = load_wave_mapping_from_excel(path, inventory)
+    assert mapping == {1: ("dp01",)}
+
+
+def test_ambiguous_non_stale_host_sheets_raises(tmp_path: Path, inventory):
+    path = write_workbook(tmp_path / "w.xlsx", {
+        "Host List NO IT_A": [["c"], ["Computer", "Hostname", "Groups"], ["dp01.sky.local", "dp01", 1]],
+        "Host List NO IT_B": [["c"], ["Computer", "Hostname", "Groups"], ["dp01.sky.local", "dp01", 1]],
+    })
+    with pytest.raises(ValueError, match="Multiple sheets"):
+        load_wave_mapping_from_excel(path, inventory)
+
+
 def test_hosts_for_groups_dedupes_and_requires_known_groups():
     mapping = {1: ("a", "b"), 2: ("b", "c")}
     assert hosts_for_groups((1, 2), mapping) == ("a", "b", "c")

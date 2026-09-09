@@ -26,6 +26,12 @@ HOST_SHEET_NAME = "List Host NO IT"
 # Substrings used to locate the host sheet when the exact name isn't found.
 _HOST_SHEET_MARKERS = ("NO IT", "No IT")
 
+# A wave's workbook sometimes keeps a previous month's host sheet alongside the current
+# one (e.g. 'Host List NO IT_old' next to 'Host List NO IT_23on24_07') - sheets matching
+# this are deprioritized rather than picked, since silently reading last month's host
+# list would produce a wrong, unnoticed patch plan rather than an error.
+_STALE_SHEET_MARKERS = ("old",)
+
 _HEADER_ROW_INDEX = 1  # row 0 is a count cell; row 1 is the real header
 
 # Alias lists: first match in the header row wins.
@@ -37,19 +43,32 @@ _COMPUTER_COL   = "Computer"
 def _find_host_sheet(wb: openpyxl.Workbook, hint: str) -> str:
     """Return the sheet name to use for the host→group mapping.
 
-    Tries the exact *hint* first, then falls back to the first sheet whose name
-    contains any of the known marker substrings (case-insensitive).
+    Tries the exact *hint* first, then falls back to the sheet(s) whose name contains
+    any of the known marker substrings (case-insensitive). If more than one sheet
+    matches, sheets that look stale (_STALE_SHEET_MARKERS, e.g. a leftover '_old' copy)
+    are dropped first; if that still leaves more than one candidate, this raises rather
+    than guessing which one is current.
     """
     if hint in wb.sheetnames:
         return hint
-    for sheet in wb.sheetnames:
-        if any(m.lower() in sheet.lower() for m in _HOST_SHEET_MARKERS):
-            return sheet
+    candidates = [
+        s for s in wb.sheetnames if any(m.lower() in s.lower() for m in _HOST_SHEET_MARKERS)
+    ]
+    if not candidates:
+        raise ValueError(
+            f"Could not find the host sheet in {wb}. "
+            f"Tried exact name {hint!r} and substring markers {_HOST_SHEET_MARKERS}. "
+            f"Available sheets: {wb.sheetnames}. "
+            f"Override with --host-sheet."
+        )
+    if len(candidates) == 1:
+        return candidates[0]
+    current = [s for s in candidates if not any(m in s.lower() for m in _STALE_SHEET_MARKERS)]
+    if len(current) == 1:
+        return current[0]
     raise ValueError(
-        f"Could not find the host sheet in {wb}. "
-        f"Tried exact name {hint!r} and substring markers {_HOST_SHEET_MARKERS}. "
-        f"Available sheets: {wb.sheetnames}. "
-        f"Override with --host-sheet."
+        f"Multiple sheets could be the host sheet: {candidates} - not guessing which one is "
+        "current. Pass --host-sheet '<exact name>' to pick one."
     )
 
 

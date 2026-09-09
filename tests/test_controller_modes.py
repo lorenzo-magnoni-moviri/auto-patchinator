@@ -17,13 +17,16 @@ class ExplodingConnectionFactory:
         raise AssertionError(f"unexpected connection attempt: {kwargs}")
 
 
-def _controller(tmp_path, inventory, inputs, monkeypatch):
+def _controller(tmp_path, inventory, inputs, monkeypatch, show_explanations=False):
     mapped, _ = map_team_steps([make_raw(2, "Stop application Group 1")], TEAM)
     plan = build_run_plan(resolve_order(mapped), {1: ("dp01", "fw01")}, inventory)
     state = store.build_initial_state("t", "p.xlsx", "s", plan)
     feed = iter(inputs)
     monkeypatch.setattr("builtins.input", lambda *_: next(feed))
-    return RunController(plan, state, str(tmp_path), ExplodingConnectionFactory(), inventory)
+    return RunController(
+        plan, state, str(tmp_path), ExplodingConnectionFactory(), inventory,
+        show_explanations=show_explanations,
+    )
 
 
 def _pending_count(ctrl):
@@ -31,7 +34,7 @@ def _pending_count(ctrl):
 
 
 def test_manual_guide_steps_through_each_task(tmp_path, inventory, monkeypatch, capsys):
-    # dp01 (3 actions) and fw01 (5 actions) have different profiles, so each is its
+    # dp01 (2 actions) and fw01 (4 actions) have different profiles, so each is its
     # own group of 1 host; post-group (send_mail) is a third block. One ENTER per
     # block confirms everything, nothing executed, nothing printed per-host repeated.
     ctrl = _controller(tmp_path, inventory, ["m", "", "", ""], monkeypatch)
@@ -46,8 +49,15 @@ def test_manual_guide_steps_through_each_task(tmp_path, inventory, monkeypatch, 
     assert "MANUAL GUIDE" in out
     assert "ssh" not in out                      # WinSSH is used - no ssh command printed
     assert "become splunk with: sudo su - splunk" in out
-    assert "task 1/3:" in out                    # dp01's own 3-task group
-    assert "task 1/5:" in out                    # fw01's own 5-task group
+    assert "task 1/2:" in out                    # dp01's own 2-task group
+    assert "task 1/4:" in out                    # fw01's own 4-task group
+    assert "why :" not in out                    # explanations are off by default
+
+
+def test_manual_guide_verbose_shows_why(tmp_path, inventory, monkeypatch, capsys):
+    ctrl = _controller(tmp_path, inventory, ["m", "", "", ""], monkeypatch, show_explanations=True)
+    ctrl.run()
+    out = capsys.readouterr().out
     assert "why : Stop the Splunk process cleanly" in out
 
 
@@ -69,8 +79,8 @@ def test_manual_guide_batches_identical_hosts_into_one_confirmation(tmp_path, in
     assert ix02_states == [ActionStatus.SUCCESS] * len(ix02_states)
 
     out = capsys.readouterr().out
-    # the 3-task group is shown once, not once per host (ix01 then ix02)
-    assert out.count("task 1/3:") == 1
+    # the 2-task group is shown once, not once per host (ix01 then ix02)
+    assert out.count("task 1/2:") == 1
     assert out.count("stop_splunk") == 1
     assert "On 2 hosts (indexer, site milano): ix01, ix02" in out
     assert "Repeat the" in out and "IDENTICALLY on EACH of these 2 hosts" in out
@@ -105,9 +115,9 @@ def test_manual_guide_individual_fallback_from_a_batched_group(tmp_path, invento
     mapped, _ = map_team_steps([make_raw(2, "Stop application Group 1")], TEAM)
     plan = build_run_plan(resolve_order(mapped), {1: ("ix01", "ix02")}, inventory)
     state = store.build_initial_state("t", "p.xlsx", "s", plan)
-    # mode, 'i' at the group prompt, then 3 ENTERs for ix01, 's' + 2 ENTERs for ix02,
+    # mode, 'i' at the group prompt, then 2 ENTERs for ix01, 's' + 1 ENTER for ix02,
     # then ENTER for send_mail
-    feed = iter(["m", "i", "", "", "", "s", "", "", ""])
+    feed = iter(["m", "i", "", "", "s", "", ""])
     monkeypatch.setattr("builtins.input", lambda *_: next(feed))
     ctrl = RunController(plan, state, str(tmp_path), ExplodingConnectionFactory(), inventory)
     ctrl.run()
@@ -154,8 +164,8 @@ def test_capital_T_locks_task_mode_for_all_remaining_steps(tmp_path, inventory, 
     plan = _two_step_dp01_plan(inventory)
     state = store.build_initial_state("t", "p.xlsx", "s", plan)
     # 'T' once, then 'd' (mark done manually) for every action of both steps:
-    # step 2 = 3 dp01 actions + send_mail = 4; step 4 = 4 dp01 actions + send_mail = 5
-    feed = iter(["T"] + ["d"] * 9)
+    # step 2 = 2 dp01 actions + send_mail = 3; step 4 = 3 dp01 actions + send_mail = 4
+    feed = iter(["T"] + ["d"] * 7)
     monkeypatch.setattr("builtins.input", lambda *_: next(feed))
     ctrl = RunController(plan, state, str(tmp_path), ExplodingConnectionFactory(), inventory)
     ctrl.run()
@@ -180,6 +190,28 @@ def test_capital_M_locks_manual_guide_for_all_remaining_steps(tmp_path, inventor
     out = capsys.readouterr().out
     assert out.count("How do you want to run this step?") == 1
     assert out.count("MANUAL GUIDE") == 2  # printed once per step, not just once overall
+
+
+def test_show_explanations_asked_once_right_after_manual_mode_chosen(tmp_path, inventory, monkeypatch, capsys):
+    """show_explanations=None means "not yet decided" - it must be asked the first time
+    manual guide mode is actually used (not upfront, not per-step), and never asked again
+    for the rest of the run, including on later steps that also use manual guide."""
+    plan = _two_step_dp01_plan(inventory)
+    state = store.build_initial_state("t", "p.xlsx", "s", plan)
+    # 'M' locks manual guide for both steps; 'y' answers the show_explanations prompt,
+    # asked once right after 'M'; then one ENTER per (host-group, post-group) block.
+    feed = iter(["M", "y", "", "", "", ""])
+    monkeypatch.setattr("builtins.input", lambda *_: next(feed))
+    ctrl = RunController(
+        plan, state, str(tmp_path), ExplodingConnectionFactory(), inventory, show_explanations=None,
+    )
+    ctrl.run()
+
+    assert ctrl.state.is_complete()
+    assert ctrl._show_explanations is True
+    out = capsys.readouterr().out
+    assert out.count("Show the reasoning behind each action") == 1  # asked only once
+    assert "why :" in out
 
 
 def test_su_hint_uses_role_specific_command(tmp_path, inventory, monkeypatch):

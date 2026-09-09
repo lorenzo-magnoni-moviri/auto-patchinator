@@ -7,24 +7,49 @@ action, and lets the operator drive each major step in one of three modes:
   - task-by-task: the operator confirms every action before it runs
                   (run / mark-manual / skip / back / jump / quit).
   - manual guide: nothing is executed - each task is shown one at a time (command,
-                  host, user + su command, and why); the operator performs it by
-                  hand (connecting via WinSSH) and presses ENTER to move to the
-                  next one. 'l' lists all of the step's tasks at once.
+                  host, user + su command, and optionally why - see show_explanations
+                  below); the operator performs it by hand (connecting via WinSSH) and
+                  presses ENTER to move to the next one. 'l' lists all of the step's
+                  tasks at once.
 
 The mode is asked at the start of every step ([A]/[T]/[M] locks that mode for all
 remaining steps; the --full-auto-mode CLI flag skips the question entirely, starting
-locked to automatic). The terminal's visible screen is cleared at the start of every
-step (scrollback is left intact, so the operator can still scroll up to earlier steps)
-so each step starts from a clean screen instead of scrolling past the previous one's
-output. Failures show in red with the command output and a retry-focused menu,
-identical in all executing modes. All progress is persisted after every transition so
+locked to automatic). show_explanations controls whether manual guide's "why" line is
+shown at all - it's asked only once, right after manual guide mode is chosen for the
+first time (never asked at all if manual guide is never used that run, and never asked
+again afterwards); --verbose pre-decides it and skips that prompt entirely. The
+terminal's visible screen is
+cleared at the start of every step (scrollback is left intact, so the operator can
+still scroll up to earlier steps) so each step starts from a clean screen instead of
+scrolling past the previous one's output. Failures show in red with the command output
+and a retry-focused menu, identical in all executing modes. All progress is persisted
+after every transition so
 a crash/Ctrl-C can be resumed later.
+
+Automatic mode additionally does two things task-by-task/manual guide don't, both scoped
+to a single step's per-host actions only (never pre/post-group, which stay sequential -
+see _run_automatic):
+  - Reuses one SSH connection per (host, identity) across that host's whole action list
+    for the step, instead of reconnecting (fresh PAS gateway login + su handshake) for
+    every single action - see _HostConnections. Never carried into the next step: the
+    host may be rebooted by another team's OS-patch action between a "Stop" step and its
+    later "Start" step, so nothing is assumed to survive past the step it was opened for.
+  - max_parallel_hosts > 1 runs that many hosts' action lists concurrently (a
+    ThreadPoolExecutor, one worker per host) instead of one host at a time - default is 1
+    (fully sequential, current behavior) since the PAS/CyberArk gateway's tolerance for
+    concurrent sessions isn't established; --max-parallel-hosts opts in. Console output
+    and state saves are serialized (_console_lock / _state_lock) so concurrent hosts'
+    printed lines and failure/manual-confirm prompts never interleave; a quit chosen from
+    within one host's prompt stops the others from starting their next action (in-flight
+    commands always finish - never killed mid-SSH) via a shared threading.Event.
 """
 from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Protocol
 
 from auto_patchinator.actions.sequences import CRONTAB_BACKUP
@@ -62,8 +87,6 @@ _GROUP_SCOPE_LABEL = {PRE_GROUP_SCOPE: "group", POST_GROUP_SCOPE: "group"}
 _AUTO_LABELS = {
     "stop_splunk": "stopping splunk",
     "start_splunk": "starting splunk",
-    "backup_systemd_unit": "backing up systemd unit",
-    "restore_systemd_unit": "restoring systemd unit",
     "disable_boot_start": "disabling boot-start",
     "enable_boot_start": "enabling boot-start",
     "daemon_reload": "reloading systemd daemon",
@@ -79,23 +102,18 @@ _AUTO_LABEL_WIDTH = 50  # pad so the DONE/FAILED column lines up
 _GUIDE_DESCRIPTIONS = {
     "stop_splunk": "Stop the Splunk process cleanly before the OS is patched.",
     "start_splunk": "Start Splunk again now that the OS has been patched.",
-    "backup_systemd_unit": (
-        "Save a copy of the hand-edited systemd unit file - 'enable boot-start' later "
-        "regenerates it from a template and would lose the edits."
-    ),
     "disable_boot_start": (
         "Unregister Splunk from systemd boot so the patch reboot comes back up without Splunk."
     ),
     "enable_boot_start": (
-        "Re-register Splunk with systemd. This REGENERATES the unit file from a template - "
-        "the next action restores the edited copy over it."
+        "Re-register Splunk with systemd. This regenerates the unit file from a template, but "
+        "the systemd override drop-in holds the customizations so nothing is lost."
     ),
-    "restore_systemd_unit": (
-        "Overwrite the regenerated unit file with the backed-up edited copy. Overwrite in "
-        "place (cat >) - do NOT rm+cp, replacing the inode breaks systemd's cached state."
+    "daemon_reload": "Make systemd re-read the regenerated unit file.",
+    "clean_kvstore": (
+        "Clear the local KV store so it resyncs cleanly from the cluster - done while Splunk "
+        "is still down, before starting it back up."
     ),
-    "daemon_reload": "Make systemd re-read the restored unit file.",
-    "clean_kvstore": "Clear the local KV store so it resyncs cleanly from the cluster.",
     "backup_crontab": (
         f"Save the splunk user's crontab to {CRONTAB_BACKUP} BEFORE it gets "
         "deleted - it is restored from this file after patching."
@@ -116,6 +134,42 @@ def _auto_label(action: Action) -> str:
 
 def _scope_label(scope: str) -> str:
     return _GROUP_SCOPE_LABEL.get(scope, scope)
+
+
+class _HostConnections:
+    """Caches one open connection per identity for a single host, reused across that
+    host's automatic-mode actions within one step. Never used across steps - see the
+    module docstring. Only ever touched by the one thread running that host's block, so
+    it needs no locking of its own."""
+
+    def __init__(self, factory: ConnectionFactory, hostname: str, role) -> None:
+        self._factory = factory
+        self._hostname = hostname
+        self._role = role
+        self._by_identity: dict[Identity, Connection] = {}
+
+    def get(self, identity: Identity) -> Connection:
+        conn = self._by_identity.get(identity)
+        if conn is None:
+            conn = self._factory(hostname=self._hostname, identity=identity, role=self._role)
+            conn.connect()
+            self._by_identity[identity] = conn
+        return conn
+
+    def drop(self, identity: Identity) -> None:
+        """Discard a connection that turned out to be stale/dead, so the next attempt
+        (e.g. an operator-chosen retry) opens a fresh one instead of reusing a broken
+        session."""
+        conn = self._by_identity.pop(identity, None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001 - already broken, closing is best-effort
+                pass
+
+    def close_all(self) -> None:
+        for identity in list(self._by_identity):
+            self.drop(identity)
 
 
 def is_forced_manual(inventory: Inventory, scope: str, action: Action) -> bool:
@@ -162,6 +216,8 @@ class RunController:
         inventory: Inventory,
         dry_run: bool = False,
         full_auto: bool = False,
+        show_explanations: bool | None = False,
+        max_parallel_hosts: int = 1,
     ) -> None:
         self._plans = {p.excel_step: p for p in run_plan}
         self._order = [p.excel_step for p in run_plan]
@@ -171,7 +227,17 @@ class RunController:
         self._inventory = inventory
         self._dry_run = dry_run
         self._locked_mode: str | None = "auto" if full_auto else None
+        # None = not yet decided; asked once, the first time manual guide mode is used.
+        self._show_explanations: bool | None = show_explanations
         self._jump_target_index: int | None = None
+        # >1 runs that many hosts' automatic-mode action lists concurrently (see the
+        # module docstring); 1 (the default) is the original fully-sequential behavior.
+        self._max_parallel_hosts = max(1, max_parallel_hosts)
+        # Guard console output and state saves, respectively, once automatic mode may be
+        # running more than one host's actions at a time. Uncontended (near-free) when
+        # max_parallel_hosts is 1, since only one thread is ever running then.
+        self._console_lock = threading.Lock()
+        self._state_lock = threading.Lock()
 
     def run(self) -> None:
         index = self._start_index()
@@ -198,7 +264,10 @@ class RunController:
         return 0
 
     def _save(self) -> None:
-        store.save(self.state, self._state_dir)
+        # Locked so concurrent automatic-mode hosts never interleave writes to the
+        # same state file - see the module docstring.
+        with self._state_lock:
+            store.save(self.state, self._state_dir)
 
     def _handle_quit(self) -> None:
         try:
@@ -245,18 +314,105 @@ class RunController:
         _log.info("step %s run mode: %s", excel_step, mode)
 
         if mode == "manual":
+            if self._show_explanations is None:
+                self._show_explanations = self._ask_show_explanations()
+                _log.info("show_explanations set to %s (asked at step %s)", self._show_explanations, excel_step)
             return self._run_manual_guide(pending)
+
+        if mode == "auto":
+            return self._run_automatic(pending)
 
         for scope, action, action_state in pending:
             if action_state.status in (ActionStatus.SUCCESS, ActionStatus.SKIPPED):
                 continue  # may have been resolved by a jump/back replay
-            if mode == "auto":
-                outcome = self._handle_action_auto(scope, action, action_state)
-            else:
-                outcome = self._handle_action(scope, action, action_state)
+            outcome = self._handle_action(scope, action, action_state)
             if outcome != "continue":
                 return outcome
         return "next"
+
+    # ------------------------------------------------------------------
+    # Automatic mode: pre-group (sequential) -> per-host (optionally concurrent,
+    # each host's own actions always in order) -> post-group (sequential).
+    # ------------------------------------------------------------------
+
+    def _run_automatic(self, pending: list) -> str:
+        pre_items: list = []
+        post_items: list = []
+        host_blocks: dict[str, list] = {}
+        host_order: list[str] = []
+        for scope, action, action_state in pending:
+            if action_state.status in (ActionStatus.SUCCESS, ActionStatus.SKIPPED):
+                continue  # may have been resolved by a jump/back replay
+            if scope == PRE_GROUP_SCOPE:
+                pre_items.append((scope, action, action_state))
+            elif scope == POST_GROUP_SCOPE:
+                post_items.append((scope, action, action_state))
+            else:
+                if scope not in host_blocks:
+                    host_blocks[scope] = []
+                    host_order.append(scope)
+                host_blocks[scope].append((scope, action, action_state))
+
+        for scope, action, action_state in pre_items:
+            outcome = self._handle_action_auto(scope, action, action_state)
+            if outcome != "continue":
+                return outcome
+
+        if len(host_order) == 1 or self._max_parallel_hosts <= 1:
+            for hostname in host_order:
+                if self._run_host_block_auto(hostname, host_blocks[hostname]) == "quit":
+                    return "quit"
+        elif host_order:
+            quit_event = threading.Event()
+            with ThreadPoolExecutor(max_workers=self._max_parallel_hosts) as pool:
+                futures = {
+                    pool.submit(self._run_host_block_auto, hostname, host_blocks[hostname], quit_event): hostname
+                    for hostname in host_order
+                }
+                outcomes = {futures[f]: f.result() for f in as_completed(futures)}
+            if "quit" in outcomes.values():
+                return "quit"
+
+        for scope, action, action_state in post_items:
+            outcome = self._handle_action_auto(scope, action, action_state)
+            if outcome != "continue":
+                return outcome
+        return "next"
+
+    def _run_host_block_auto(
+        self, hostname: str, items: list, quit_event: "threading.Event | None" = None
+    ) -> str:
+        """Run one host's pending automatic-mode actions, in order, against one
+        connection per identity reused across the whole list (see _HostConnections).
+        Runs in a worker thread when max_parallel_hosts > 1, in the main thread
+        otherwise - either way this is the only thread ever touching this host's
+        connections or its own action_state entries."""
+        role = self._inventory.get(hostname).role
+        connections = _HostConnections(self._connection_factory, hostname, role)
+        # quit_event is only ever passed (non-None) by the concurrent thread-pool branch
+        # of _run_automatic - the single-line dot animation only makes sense when this
+        # is truly the only host printing at the moment, i.e. the sequential branch,
+        # regardless of what --max-parallel-hosts was set to for the run as a whole.
+        animate = quit_event is None
+        try:
+            for scope, action, action_state in items:
+                if action_state.status in (ActionStatus.SUCCESS, ActionStatus.SKIPPED):
+                    continue
+                if quit_event is not None and quit_event.is_set():
+                    return "quit"
+                if self._is_forced_manual(scope, action):
+                    outcome = self._confirm_manual_auto(scope, action, action_state)
+                else:
+                    outcome = self._attempt_with_retry(
+                        scope, action, action_state, auto=True, connections=connections, animate=animate
+                    )
+                if outcome == "quit":
+                    if quit_event is not None:
+                        quit_event.set()
+                    return "quit"
+            return "continue"
+        finally:
+            connections.close_all()
 
     def _ask_step_mode(self, pending_count: int) -> str:
         print(f"    {pending_count} pending action(s). How do you want to run this step?")
@@ -266,7 +422,7 @@ class RunController:
         print("      [t] task-by-task  - confirm every action before it runs")
         print("      [T] task-by-task for ALL remaining steps (stop asking)")
         print("      [m] manual guide  - execute NOTHING: shows each task one at a time (command,")
-        print("                          host, user, and why) and waits for you to do it by hand")
+        print("                          host, user) and waits for you to do it by hand")
         print("      [M] manual guide for ALL remaining steps (stop asking)")
         print("      [q] quit")
         while True:
@@ -290,6 +446,12 @@ class RunController:
             if lowered == "q":
                 return "quit"
             print("    Please choose one of: a, A, t, T, m, M, q")
+
+    @staticmethod
+    def _ask_show_explanations() -> bool:
+        print("    Show the reasoning behind each action in manual guide (the 'why' line)?")
+        answer = input("    [y/N] > ").strip().lower()
+        return answer == "y"
 
     # ------------------------------------------------------------------
     # Manual guide mode
@@ -371,7 +533,7 @@ class RunController:
         why = _GUIDE_DESCRIPTIONS.get(action.name) or (
             action.note if action.kind != ActionKind.MANUAL else None
         )
-        if why:
+        if why and self._show_explanations:
             print(f"         why : {why}")
 
     def _print_guide_overview(self, pending: list) -> None:
@@ -558,56 +720,85 @@ class RunController:
         return self._attempt_with_retry(scope, action, action_state, auto=True)
 
     def _confirm_manual_auto(self, scope: str, action: Action, action_state: ActionState) -> str:
-        print(f"\n[{_scope_label(scope)}] {action.name.replace('_', ' ')} - MANUAL STEP")
-        detail = action.note or action.command or ""
-        if action.kind != ActionKind.MANUAL and action.command:
-            # Automatable action forced manual on this host (CyberArk-GUI-only identity):
-            # show exactly what to run and as whom.
-            ident = action.identity.value if action.identity else "-"
-            print(f"    run as {ident}: {action.command}")
-        if detail:
-            for line in detail.splitlines():
-                print(f"    {line}")
-        answer = input(yellow("    press ENTER to confirm it is done (s=skip, q=quit) ... ")).strip().lower()
-        _log.info("operator answered %r for manual %s / %s", answer, scope, action.name)
-        if answer == "q":
-            return "quit"
-        if answer == "s":
-            action_state.status = ActionStatus.SKIPPED
+        # Held for the whole prompt (not just the prints) so two hosts hitting a forced-
+        # manual action at the same time in a concurrent automatic run can't both read
+        # stdin at once - see the module docstring. Other hosts' SSH work keeps running
+        # in the background; only their console output queues behind this lock.
+        with self._console_lock:
+            print(f"\n[{_scope_label(scope)}] {action.name.replace('_', ' ')} - MANUAL STEP")
+            detail = action.note or action.command or ""
+            if action.kind != ActionKind.MANUAL and action.command:
+                # Automatable action forced manual on this host (CyberArk-GUI-only identity):
+                # show exactly what to run and as whom.
+                ident = action.identity.value if action.identity else "-"
+                print(f"    run as {ident}: {action.command}")
+            if detail:
+                for line in detail.splitlines():
+                    print(f"    {line}")
+            answer = input(yellow("    press ENTER to confirm it is done (s=skip, q=quit) ... ")).strip().lower()
+            _log.info("operator answered %r for manual %s / %s", answer, scope, action.name)
+            if answer == "q":
+                return "quit"
+            if answer == "s":
+                action_state.status = ActionStatus.SKIPPED
+                self._save()
+                print(yellow("    SKIPPED"))
+                return "continue"
+            action_state.status = ActionStatus.SUCCESS
+            action_state.output = "confirmed done manually by operator"
             self._save()
-            print(yellow("    SKIPPED"))
+            print(green("    CONFIRMED"))
             return "continue"
-        action_state.status = ActionStatus.SUCCESS
-        action_state.output = "confirmed done manually by operator"
-        self._save()
-        print(green("    CONFIRMED"))
-        return "continue"
 
     # ------------------------------------------------------------------
     # Shared execution + failure retry menu
     # ------------------------------------------------------------------
 
-    def _attempt_with_retry(self, scope: str, action: Action, action_state: ActionState, auto: bool) -> str:
+    def _attempt_with_retry(
+        self,
+        scope: str,
+        action: Action,
+        action_state: ActionState,
+        auto: bool,
+        connections: "_HostConnections | None" = None,
+        animate: bool = True,
+    ) -> str:
+        prefix = f"[{_scope_label(scope)}] {_auto_label(action)}"
         while True:
             started = time.monotonic()
             if auto:
-                prefix = f"[{_scope_label(scope)}] {_auto_label(action)}"
-                with progress_line(f"{prefix:<{_AUTO_LABEL_WIDTH - 4}}"):
-                    self._execute(scope, action, action_state, quiet=True)
+                if animate:
+                    # Only meaningful single-threaded (max_parallel_hosts <= 1) - the
+                    # in-place \r redraw assumes it owns the terminal's last line, which
+                    # doesn't hold once other hosts may be printing concurrently.
+                    with progress_line(f"{prefix:<{_AUTO_LABEL_WIDTH - 4}}"):
+                        self._execute(scope, action, action_state, quiet=True, connections=connections)
+                else:
+                    with self._console_lock:
+                        print(f"{prefix} ...")
+                    self._execute(scope, action, action_state, quiet=True, connections=connections)
             else:
-                self._execute(scope, action, action_state, quiet=False)
+                self._execute(scope, action, action_state, quiet=False, connections=connections)
             elapsed = time.monotonic() - started
             if action_state.status == ActionStatus.SUCCESS:
                 if auto:
                     duration = f"  ({elapsed:.0f}s)" if elapsed >= 2 else ""
                     done = "DONE (dry-run)" if self._dry_run else "DONE"
-                    print(green(done) + duration)
+                    with self._console_lock:
+                        if animate:
+                            print(green(done) + duration)
+                        else:
+                            print(f"{prefix} {green(done)}{duration}")
                 return "continue"
 
-            if auto:
-                print(red("FAILED"))
-            self._print_failure(scope, action, action_state)
-            choice = self._failure_menu()
+            # Held for the whole failure block (print + retry-menu input), same reason
+            # as _confirm_manual_auto: exactly one host's failure is ever on screen /
+            # reading stdin at a time, though other hosts keep running in the background.
+            with self._console_lock:
+                if auto:
+                    print(red("FAILED")) if animate else print(f"{prefix} {red('FAILED')}")
+                self._print_failure(scope, action, action_state)
+                choice = self._failure_menu()
             _log.info("operator chose %r after failure of %s / %s", choice, scope, action.name)
             if choice == "r":
                 continue
@@ -687,7 +878,18 @@ class RunController:
     # Execution primitive
     # ------------------------------------------------------------------
 
-    def _execute(self, scope: str, action: Action, action_state: ActionState, quiet: bool = False) -> None:
+    def _execute(
+        self,
+        scope: str,
+        action: Action,
+        action_state: ActionState,
+        quiet: bool = False,
+        connections: "_HostConnections | None" = None,
+    ) -> None:
+        """Run one action. connections is None everywhere except the automatic-mode
+        per-host path (_run_host_block_auto), which passes a cache reused across that
+        host's whole action list for the step instead of reconnecting every action -
+        see _HostConnections and the module docstring."""
         ok_prefix = "OK (dry-run, simulated only)" if self._dry_run else "OK"
         action_state.status = ActionStatus.IN_PROGRESS
         action_state.error = None
@@ -713,15 +915,28 @@ class RunController:
                 return
 
             role = self._inventory.get(scope).role if scope not in (PRE_GROUP_SCOPE, POST_GROUP_SCOPE) else None
-            connection = self._connection_factory(hostname=scope, identity=action.identity, role=role)
-            connection.connect()
-            try:
-                if action.kind == ActionKind.PLAIN:
-                    result = connection.run_plain(action.command, timeout=action.timeout_seconds)
-                else:
-                    result = connection.run_interactive(action.script, timeout=action.timeout_seconds)
-            finally:
-                connection.close()
+            if connections is not None:
+                connection = connections.get(action.identity)
+                try:
+                    if action.kind == ActionKind.PLAIN:
+                        result = connection.run_plain(action.command, timeout=action.timeout_seconds)
+                    else:
+                        result = connection.run_interactive(action.script, timeout=action.timeout_seconds)
+                except Exception:
+                    # The cached session itself is suspect (not just a failed command) -
+                    # drop it so a retry reconnects instead of reusing a dead session.
+                    connections.drop(action.identity)
+                    raise
+            else:
+                connection = self._connection_factory(hostname=scope, identity=action.identity, role=role)
+                connection.connect()
+                try:
+                    if action.kind == ActionKind.PLAIN:
+                        result = connection.run_plain(action.command, timeout=action.timeout_seconds)
+                    else:
+                        result = connection.run_interactive(action.script, timeout=action.timeout_seconds)
+                finally:
+                    connection.close()
 
             action_state.output = result.output
             if result.success:

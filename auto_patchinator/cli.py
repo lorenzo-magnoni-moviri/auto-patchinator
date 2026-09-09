@@ -22,7 +22,7 @@ from auto_patchinator.reports.report import write_report
 from auto_patchinator.runner.controller import RunController, print_plan_summary
 from auto_patchinator.state import store
 
-DEFAULT_TEAM_FILTERS = ["AOM Sky CSO", "AOM Splunk Broadband"]
+DEFAULT_TEAM_FILTERS = ["AOM Sky CSO", "AOM Splunk Broadband", "Splunk Broadband"]
 DEFAULT_INVENTORY_PATH = "inventory/hosts.yaml"
 PLANS_DIR = "plans"
 
@@ -77,6 +77,24 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="PAS/CyberArk SSH gateway, as 'host' or 'host:port' (default port 22). "
              "Falls back to 'pas_gateway' in the inventory YAML.",
+    )
+    run_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show the reasoning behind each action in manual guide mode (the 'why' line), "
+             "not just the command. Skips the interactive prompt for this (normally asked "
+             "once, the first time manual guide mode is used).",
+    )
+    run_parser.add_argument(
+        "--max-parallel-hosts",
+        type=int,
+        default=1,
+        metavar="N",
+        help="In automatic mode, run this many hosts' action sequences concurrently within "
+             "each step instead of one at a time (default: 1, i.e. sequential - the PAS/"
+             "CyberArk gateway's tolerance for concurrent sessions isn't established, so "
+             "this is opt-in). Only affects automatic mode; task-by-task and manual guide "
+             "are always sequential. Has no effect on a step with only one host.",
     )
 
     conn_parser = subparsers.add_parser(
@@ -175,6 +193,12 @@ def _resolve_pas_gateway(cli_value: str | None, inventory) -> tuple[str | None, 
 def _load_team_steps(excel: str, plan_sheet: str, team_filter: list[str]):
     raw_steps = load_plan_sheet(excel, plan_sheet)
     mapped, unmapped = map_team_steps(raw_steps, team_filter)
+    if not mapped:
+        labels = sorted({r.gruppo_referente for r in raw_steps if r.gruppo_referente})
+        print(
+            f"\nWARNING: no rows matched team filter {team_filter} - the resolved plan will "
+            f"be empty. Gruppo_referente values found in this sheet: {labels}"
+        )
     if unmapped:
         print(f"\nWARNING: {len(unmapped)} row(s) matched team filter but could not be "
               "parsed into a stop/start + group action - review manually:")
@@ -184,6 +208,8 @@ def _load_team_steps(excel: str, plan_sheet: str, team_filter: list[str]):
 
 
 def cmd_run(args: argparse.Namespace) -> None:
+    if args.max_parallel_hosts < 1:
+        raise SystemExit(f"--max-parallel-hosts must be at least 1, got {args.max_parallel_hosts}")
     args.excel = args.excel or _prompt_for_excel_path()
     args.inventory = _resolve_inventory_path(args.inventory)
 
@@ -214,6 +240,10 @@ def cmd_run(args: argparse.Namespace) -> None:
         print("Aborted, nothing was done.")
         return
 
+    # None = not yet decided; the controller asks once, the first time manual guide mode
+    # is actually used, instead of upfront here where it may turn out to be irrelevant.
+    show_explanations = True if args.verbose else None
+
     resumable = store.find_incomplete_run(args.state_dir)
     if resumable is not None:
         existing = store.load(resumable)
@@ -230,10 +260,11 @@ def cmd_run(args: argparse.Namespace) -> None:
     print(f"Logging to {log_path}")
     log = logging.getLogger(__name__)
     log.info(
-        "run %s | mode=%s | full_auto=%s | environment=%s | excel=%s | host_sheet=%s | team_filter=%s "
-        "| pas_gateway=%s:%s",
-        state.run_id, "dry-run" if args.dry_run else "LIVE", args.full_auto_mode, args.environment,
-        args.excel, args.host_sheet, args.team_filter, gateway_host, gateway_port,
+        "run %s | mode=%s | full_auto=%s | verbose=%s | max_parallel_hosts=%s | environment=%s | "
+        "excel=%s | host_sheet=%s | team_filter=%s | pas_gateway=%s:%s",
+        state.run_id, "dry-run" if args.dry_run else "LIVE", args.full_auto_mode, args.verbose,
+        args.max_parallel_hosts, args.environment, args.excel, args.host_sheet, args.team_filter,
+        gateway_host, gateway_port,
     )
     for p in run_plan:
         log.info("plan: step %s %s groups=%s hosts=%s", p.excel_step, p.verb.value, list(p.groups), list(p.hostnames))
@@ -256,7 +287,8 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     controller = RunController(
         run_plan, state, args.state_dir, connection_factory, inventory,
-        dry_run=args.dry_run, full_auto=args.full_auto_mode,
+        dry_run=args.dry_run, full_auto=args.full_auto_mode, show_explanations=show_explanations,
+        max_parallel_hosts=args.max_parallel_hosts,
     )
     controller.run()
 

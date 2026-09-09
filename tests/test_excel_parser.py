@@ -53,3 +53,33 @@ def test_load_plan_sheet_missing_column_raises(tmp_path: Path):
 def test_load_plan_sheet_missing_sheet_raises(plan_xlsx: Path):
     with pytest.raises(ValueError, match="NoSuchSheet"):
         load_plan_sheet(plan_xlsx, "NoSuchSheet")
+
+
+def test_load_plan_sheet_tolerates_trailing_whitespace_in_sheet_name(tmp_path: Path):
+    """Some waves' 'Plan' sheet has incidental trailing whitespace in its name."""
+    path = write_workbook(tmp_path / "whitespace.xlsx", {"Plan ": [
+        PLAN_HEADER,
+        [1, None, "App", "Nome", TEAM, None, None, None, None, None],
+    ]})
+    steps = load_plan_sheet(path, "Plan")
+    assert [s.step for s in steps] == [1]
+
+
+def test_load_plan_sheet_does_not_match_another_teams_plan_sheet(tmp_path: Path):
+    """'Plan IT 28on29_10' must never be mistaken for our 'Plan' sheet even though it
+    starts with the same word - only whitespace differences are tolerated."""
+    path = write_workbook(tmp_path / "other_team.xlsx", {"Plan IT 28on29_10": [
+        PLAN_HEADER,
+        [1, None, "App", "Nome", TEAM, None, None, None, None, None],
+    ]})
+    with pytest.raises(ValueError, match="no sheet named 'Plan'"):
+        load_plan_sheet(path, "Plan")
+
+
+def test_load_plan_sheet_ambiguous_sheets_raises(tmp_path: Path):
+    path = write_workbook(tmp_path / "ambiguous.xlsx", {
+        "Plan ": [PLAN_HEADER, [1, None, "App", "Nome", TEAM, None, None, None, None, None]],
+        " Plan": [PLAN_HEADER, [2, None, "App", "Nome", TEAM, None, None, None, None, None]],
+    })
+    with pytest.raises(ValueError, match="multiple sheets"):
+        load_plan_sheet(path, "Plan")

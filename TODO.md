@@ -87,6 +87,63 @@ Open items, roughly in priority order.
   sequences/Captain transfer/Known limitations were all duplicated (in more depth) in
   `DOCUMENTATION.md` already; README now just covers setup, a handful of example
   commands, and a pointer to `DOCUMENTATION.md` for everything else.
+- [x] **Manual guide "why" line made optional** — `--verbose` or an interactive prompt,
+  asked once right after manual guide mode is first chosen (never asked at all if it's
+  never used that run), controls whether the reasoning behind each action is shown.
+- [x] **Dropped unit-file backup/restore, reordered stretched-SH KV clean** (2026-07-23)
+  — a systemd override (drop-in) file now holds each node's customizations, so
+  `enable_boot_start` regenerating the unit from a template no longer loses anything;
+  `backup_systemd_unit`/`restore_systemd_unit` are gone from every role's stop/start
+  sequence. Search-head-stretched's start sequence now cleans the KV store *before*
+  `start_splunk`, not after, since the store must be cleaned while Splunk is down.
+- [x] **Fixed a real dry-run failure against this month's ("23on24") wave file**
+  (2026-07-23) — three issues stacked: (1) the exact-name `"Plan"` sheet lookup crashed
+  on this wave's incidental `"Plan "` (trailing space) naming — `excel_parser.py` now
+  tolerates whitespace-only differences without matching another team's `"Plan IT
+  ..."` sheet; (2) the host-sheet substring fallback in `wave_mapping.py` would have
+  silently picked a leftover `"..._old"` sheet over the current one when both matched
+  — it now deprioritizes `_old`-marked sheets and raises instead of guessing if still
+  ambiguous; (3) this wave labels our rows `Gruppo_referente == "Splunk Broadband"`
+  (no `"AOM"` prefix, confirmed to be a legitimate recurring label, not a typo) — added
+  to `DEFAULT_TEAM_FILTERS`, and `_load_team_steps` now warns (listing every label
+  actually found) instead of silently resolving to an empty plan if a future wave uses
+  yet another label none of the filters match.
+
+- [x] **Automatic mode was reconnecting per action; now reuses one connection per
+  (host, identity) per step, plus optional `--max-parallel-hosts`** (2026-09-09) —
+  raised by the operator as "the automatic version is too slow." Two findings/fixes,
+  same area of code:
+  - **Per-action reconnect** (found while investigating): `RunController._execute` was
+    opening a brand-new SSH+PAS-gateway login and re-running the full `su` handshake for
+    *every single action*, not once per host as CLAUDE.md's architecture notes already
+    claimed - a role like `search_head_stretched`'s start sequence (4 actions, 2
+    identities) paid 4 full PAS logins + 4 su handshakes per host. Fixed: automatic mode
+    now opens one connection per (host, identity) and reuses it across that host's whole
+    action list for the step (`_HostConnections`), closing it once that host's block
+    finishes. Deliberately **not** carried across steps - the host may be rebooted by
+    another team's OS-patch action between a "Stop" step and its later "Start" step, so
+    nothing survives past the step it was opened for. A retry after a failed command
+    drops and reopens that identity's connection rather than reusing a possibly-dead one.
+    Task-by-task and manual guide are unaffected (still one-shot per action - see below).
+  - **`--max-parallel-hosts N`** (the operator's actual ask): automatic mode can now run
+    up to N hosts' action lists concurrently within a step (`ThreadPoolExecutor`,
+    `_run_automatic`/`_run_host_block_auto`) instead of one host at a time. Pre-/post-
+    group actions stay sequential barriers before/after, unaffected. Default is **1**
+    (fully sequential, unchanged behavior) - opt-in, since the PAS/CyberArk gateway's
+    tolerance for concurrent sessions isn't established (see the connectivity findings
+    above: the gateway's own retry-delay comment already calls out rate-limiting
+    sensitivity, and repeated test-environment failures are believed to have triggered
+    an account-lockout counter). Console output and state saves are serialized so
+    concurrent hosts' printed lines and failure/manual-confirm prompts never interleave;
+    a quit chosen from one host's prompt stops the others from starting their *next*
+    action (an in-flight command always finishes - never killed mid-SSH) via a shared
+    `threading.Event`, checked before each action. Scoped to automatic mode only -
+    task-by-task and manual guide are operator-paced already, not runtime-bound, and
+    task-by-task's back/jump navigation doesn't fit the "contiguous per-host block"
+    assumption this relies on.
+  - Once the operator has run a live wave with `--max-parallel-hosts` > 1 without
+    gateway-side issues (rate-limiting, unexpected auth failures), consider raising the
+    default above 1.
 
 ---
 
@@ -217,11 +274,6 @@ Open items, roughly in priority order.
 
 - [ ] **`--environment` in report** — the markdown report (`reports/report.py`) does
   not currently record which environment was targeted. Add it to the report header.
-
-- [ ] **Parallel host actions within a group** — currently hosts within one Excel group
-  are processed sequentially. For groups with multiple hosts (e.g. all 5 Roma SHs in
-  one step) this could be parallelised with `ThreadPoolExecutor`, gated by a
-  configurable concurrency limit.
 
 ---
 

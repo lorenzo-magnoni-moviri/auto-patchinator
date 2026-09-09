@@ -4,6 +4,11 @@ Column names vary across waves (English vs Italian naming, suffix-numbered varia
   Step       : 'Step'       | 'Step2'
   Dependancy : 'Dependancy' | 'Dipendenza' | 'Dipendenza2'
   All other required columns are stable across waves.
+
+Sheet name also varies: some waves add incidental trailing whitespace ('Plan ' instead
+of 'Plan') - tolerated by stripping before comparing, but only against the exact hint,
+so unrelated sheets that merely start with 'Plan' (e.g. another team's 'Plan IT 28on29_10')
+are never mistaken for ours.
 """
 from __future__ import annotations
 
@@ -88,11 +93,33 @@ def _parse_dependencies(value) -> tuple[int, ...]:
     raise ValueError(f"unexpected Dependancy value: {value!r}")
 
 
+def _find_plan_sheet(sheetnames: list[str], hint: str) -> str:
+    """Return the sheet name to use for the plan.
+
+    Tries the exact *hint* first, then falls back to sheets that match after stripping
+    incidental whitespace - not a substring match, so another team's sheet that merely
+    starts with the same word (e.g. 'Plan IT 28on29_10') is never mistaken for ours.
+    """
+    if hint in sheetnames:
+        return hint
+    candidates = [s for s in sheetnames if s.strip() == hint.strip()]
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        raise ValueError(f"no sheet named {hint!r}, found {sheetnames}")
+    raise ValueError(
+        f"multiple sheets could be the plan sheet: {candidates} - not guessing which one is "
+        "current. Pass --plan-sheet '<exact name>' to pick one."
+    )
+
+
 def load_plan_sheet(path: str | Path, sheet_name: str = "Plan") -> list[RawStep]:
     wb = openpyxl.load_workbook(path, data_only=True)
-    if sheet_name not in wb.sheetnames:
-        raise ValueError(f"{path}: no sheet named {sheet_name!r}, found {wb.sheetnames}")
-    ws = wb[sheet_name]
+    try:
+        actual_sheet = _find_plan_sheet(wb.sheetnames, sheet_name)
+    except ValueError as exc:
+        raise ValueError(f"{path}: {exc}") from exc
+    ws = wb[actual_sheet]
 
     rows = list(ws.iter_rows(values_only=True))
     if not rows:

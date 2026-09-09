@@ -8,16 +8,23 @@ from auto_patchinator.actions.sequences import (
 from auto_patchinator.actions.types import ActionKind, Identity
 
 
-def test_start_sequence_order_is_enable_restore_reload_start():
+def test_start_sequence_order_is_enable_reload_start():
     seq = get_role_sequences("dp01", NodeRole.DEPLOYER)
     names = [a.name for a in seq.start_per_node]
-    assert names == ["enable_boot_start", "restore_systemd_unit", "daemon_reload", "start_splunk"]
+    assert names == ["enable_boot_start", "daemon_reload", "start_splunk"]
 
 
-def test_stop_sequence_backs_up_unit_before_disabling():
+def test_stop_sequence_is_stop_then_disable():
     seq = get_role_sequences("dp01", NodeRole.DEPLOYER)
     names = [a.name for a in seq.stop_per_node]
-    assert names.index("backup_systemd_unit") < names.index("disable_boot_start")
+    assert names == ["stop_splunk", "disable_boot_start"]
+
+
+def test_search_head_stretched_cleans_kvstore_before_starting():
+    seq = get_role_sequences("anyhost", NodeRole.SEARCH_HEAD_STRETCHED)
+    names = [a.name for a in seq.start_per_node]
+    assert names.index("clean_kvstore") < names.index("start_splunk")
+    assert names == ["enable_boot_start", "daemon_reload", "clean_kvstore", "start_splunk"]
 
 
 def test_indexer_uses_dedicated_splunk_bin():
@@ -62,14 +69,6 @@ def test_timeouts_60s_default_900s_for_splunk_stop_start():
             for action in actions:
                 expected = 900 if action.name in ("stop_splunk", "start_splunk") else 60
                 assert action.timeout_seconds == expected, action.name
-
-
-def test_restore_unit_overwrites_in_place_not_replace_inode():
-    seq = get_role_sequences("dp01", NodeRole.DEPLOYER)
-    restore = next(a for a in seq.start_per_node if a.name == "restore_systemd_unit")
-    assert restore.command.startswith("cat ")
-    assert ">" in restore.command
-    assert restore.identity == Identity.ROOT
 
 
 def test_enable_boot_start_runs_as_root_disable_as_splunk():

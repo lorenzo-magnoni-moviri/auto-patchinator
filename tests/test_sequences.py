@@ -27,6 +27,17 @@ def test_search_head_stretched_cleans_kvstore_before_starting():
     assert names == ["enable_boot_start", "daemon_reload", "clean_kvstore", "start_splunk"]
 
 
+def test_clean_kvstore_skips_the_interactive_confirmation():
+    """Without --answer-yes, splunk interactively confirms the drop ('Are you sure you
+    want to continue [y/n]?') - a PLAIN action can't answer that, so it just hangs
+    until the timeout (found live against a real search_head_stretched host,
+    2026-09-09 - see TODO.md)."""
+    seq = get_role_sequences("anyhost", NodeRole.SEARCH_HEAD_STRETCHED)
+    clean = next(a for a in seq.start_per_node if a.name == "clean_kvstore")
+    assert "--answer-yes" in clean.command
+    assert clean.kind == ActionKind.PLAIN  # still non-interactive - the flag is the fix
+
+
 def test_indexer_uses_dedicated_splunk_bin():
     seq = get_role_sequences("ix01", NodeRole.INDEXER)
     stop = next(a for a in seq.stop_per_node if a.name == "stop_splunk")

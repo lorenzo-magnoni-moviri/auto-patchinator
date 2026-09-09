@@ -113,7 +113,13 @@ def clean_kvstore(splunk_bin: str) -> Action:
         name="clean_kvstore",
         kind=ActionKind.PLAIN,
         identity=Identity.SPLUNK,
-        command=f"{splunk_bin} clean kvstore --local",
+        # --answer-yes: without it, splunk interactively confirms ("This action will
+        # permanently drop app key/value-store database ... [y/n]?") and this being a
+        # PLAIN (non-interactive) action means nothing ever answers it - the command
+        # just hangs until the action's timeout, found live against a real
+        # search_head_stretched host (2026-09-09; see TODO.md).
+        command=f"{splunk_bin} clean kvstore --local --answer-yes",
+        note="--answer-yes skips the interactive drop confirmation - a PLAIN action can't answer it.",
     )
 
 

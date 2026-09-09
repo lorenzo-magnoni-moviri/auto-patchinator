@@ -145,6 +145,31 @@ Open items, roughly in priority order.
     gateway-side issues (rate-limiting, unexpected auth failures), consider raising the
     default above 1.
 
+- [x] **Fixed: `clean_kvstore` hung indefinitely - found live against real prod
+  `prdrmlbbspksh01`** (2026-09-09) — a single-host live stop/start test of the full
+  `search_head_stretched` sequence (operator-requested, explicit double-check done
+  first: role/site confirmed, Splunk's actual running status verified read-only before
+  and after, captain status acknowledged as unverifiable without Splunk admin creds and
+  accepted as a 10-node-cluster self-heals-from-1-node risk). Stop half and
+  `enable_boot_start`/`daemon_reload` all succeeded; `clean_kvstore` then hung and timed
+  out - `splunk clean kvstore --local` interactively confirms ("This action will
+  permanently drop app key/value-store database ... [y/n]?") and, being a `PLAIN`
+  (non-interactive) action, nothing ever answered it. Nothing was actually dropped (no
+  "y" was ever sent), but `start_splunk` was never reached, leaving Splunk down on a
+  production search head until `start_splunk` was run directly to recover (confirmed
+  back up immediately after, read-only). Fixed: `clean_kvstore`'s command now includes
+  `--answer-yes`, splunk's documented flag for skipping exactly this confirmation.
+  **This role/action combination has no test-environment equivalent** - every
+  `search_head_stretched` host in the inventory is prod (test only has
+  `search_head_simple`, which doesn't use `clean_kvstore` at all) - so this bug had
+  never been exercised against a real host by anything, tool or operator, before now.
+  Unit-tested (`--answer-yes` present in the command) and **re-verified live the same
+  day**, same host, full `search_head_stretched` sequence repeated end to end: all 6
+  actions OK, `clean_kvstore` auto-answered the confirmation cleanly ("Successfully
+  removed contents of /opt/splunk/var/lib/splunk/kvstore.", exit 0) and `start_splunk`
+  followed immediately - no manual fallback needed this time. Splunk confirmed running
+  (fresh PID) immediately after.
+
 ---
 
 ## Must-do before first production live run

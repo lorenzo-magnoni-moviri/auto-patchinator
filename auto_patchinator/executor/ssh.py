@@ -281,6 +281,18 @@ class SSHConnection:
         raw = session.read_until(PROMPT_MARKER, timeout=timeout)
         return self._extract_result(raw)
 
+    def run_plain_with_secret(self, command: str, secret: str, timeout: float = 60) -> CommandResult:
+        """Like run_plain, but `secret` is substituted into $AP_SECRET in `command`
+        via a shell variable set through a sensitive (redacted-in-the-audit-log)
+        send first - the secret itself never appears in logs/run-*.log, only the
+        resulting command's shape does. Used for `splunk show ... -auth "user:$AP_SECRET"`
+        (preflight.py) - see logging_setup.py's "passwords are never written to the
+        log" invariant, which this preserves for this second credential too."""
+        session = self._require_session()
+        session.send(f"AP_SECRET={shlex.quote(secret)}", sensitive=True)
+        session.read_until(PROMPT_MARKER, timeout=15)
+        return self.run_plain(command, timeout=timeout)
+
     def run_interactive(self, script: tuple[ExpectStep, ...], timeout: float = 60) -> CommandResult:
         session = self._require_session()
         output = ""

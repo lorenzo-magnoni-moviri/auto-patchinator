@@ -2,6 +2,10 @@ from auto_patchinator.executor.credentials import SplunkApiCredentials, load_spl
 
 
 def _clear_env(monkeypatch):
+    # _load_dotenv() would otherwise re-populate these straight from a real .env file
+    # (dotenv fills in anything not already set) - stubbed out so these tests are
+    # isolated from whatever secrets the developer's local .env actually has.
+    monkeypatch.setattr("auto_patchinator.executor.credentials._load_dotenv", lambda: None)
     for var in ("SPLUNK_API_TOKEN", "SPLUNK_API_USER", "SPLUNK_API_PASSWORD"):
         monkeypatch.delenv(var, raising=False)
 

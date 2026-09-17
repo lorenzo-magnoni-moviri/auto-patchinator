@@ -170,6 +170,77 @@ Open items, roughly in priority order.
   followed immediately - no manual fallback needed this time. Splunk confirmed running
   (fresh PID) immediately after.
 
+- [x] **New: pre-patch "pretest" phase, run automatically before every LIVE `run`
+  (skipped for `--dry-run`, which stays "no SSH at all")** (2026-09-16), per operator
+  request. Three layers, each gated on the previous being available - see
+  `preflight.py`'s module docstring:
+  1. SSH connectivity, splunk identity, scoped to exactly the hosts *this plan*
+     touches (not the whole inventory) - reuses a newly-extracted shared
+     `executor/connectivity.py` (also now used by `check-connectivity` itself, so
+     there's one implementation, not two).
+  2. Same, root identity. **Root is provisioned per-request, not always-on** (per the
+     operator) - a FAIL here is routine on a day root wasn't requested, not
+     necessarily a real problem; still shown so the operator remembers to request it
+     before the actual patching window if root-identity actions are needed. (Earlier
+     in this same session, a FAIL here was momentarily mis-read as a new regression
+     before this was clarified - corrected; see the removed entry that used to be
+     here.)
+  3. If Splunk API credentials are configured (`SPLUNK_API_USER`+`SPLUNK_API_PASSWORD`
+     in `.env` - optional, gracefully skipped if absent, and skipped with a clear
+     message if only a bare `SPLUNK_API_TOKEN` is set) - for every **distinct
+     search-head role** present in the plan (`search_head_stretched` and
+     `search_head_simple` are two separate Splunk search head clusters, checked
+     separately): who the current SHC captain is and whether election is dynamic or
+     static (static outside an active wave is a red flag - likely a prior wave's
+     `revert_captain_dynamic` was never run), plus every search-head host's own local
+     KV store status. Runs as the **splunk** identity (no root needed) - the Splunk
+     admin credentials authorize it, not the OS identity.
+  These run via `splunk show shcluster-status --verbose -auth "<user>:<password>"` and
+  `splunk show kvstore-status --verbose -auth "<user>:<password>"` over the same SSH
+  session used everywhere else (`SSHConnection.run_plain_with_secret`, new - sets the
+  password via a redacted shell-variable send first, so it never appears in
+  `logs/run-*.log`). New `preflight.py` (orchestration). Never aborts the run itself -
+  failures/warnings print clearly and the operator still decides at the existing
+  "Proceed with this plan?" prompt.
+  **Splunk API credentials were added to `.env` for the first time this session** -
+  `load_splunk_api_credentials()` was scaffolding-only before now (nothing consumed
+  it). Getting this right took several live-tested iterations against real prod
+  `prdrmlbbspksh01`:
+  - First built as raw HTTPS REST API calls (`SplunkApiClient`, stdlib `urllib`) -
+    guessed field/endpoint names from memory turned out wrong twice (`dynamic_captain`
+    on the wrong endpoint, then found the right one - `/services/shcluster/config`).
+  - **Operator redirected to the actual `splunk show shcluster-status`/`kvstore-status`
+    CLI commands instead** - simpler, matches how the operator actually runs this by
+    hand, and needs no root (unlike an OS-level check) since it's the Splunk admin
+    credentials that authorize it. Rebuilt on SSH + `run_plain_with_secret`;
+    `executor/splunk_api.py` removed (REST approach fully replaced, not kept as a
+    second path).
+  - First CLI attempt used `-u "user:$AP_SECRET"` (a guess) and got `Your session is
+    invalid. Please login.` - NOT a shell/quoting bug (verified separately with a
+    dummy value - substitution mechanism works correctly) and NOT a stale cached
+    session token (also checked, and ruled out further when the operator hit the same
+    error running the command manually on a *different*, completely fresh search
+    head). **The actual fix: `-auth`, not `-u`** - confirmed by the operator directly,
+    and consistent with `captain_revert_dynamic`'s existing manual `bootstrap
+    shcluster-captain -auth admin:<password>` instructions already in
+    `actions/sequences.py`, which should have been cross-checked before guessing `-u`
+    in the first place.
+  - With `-auth`, the real command succeeded and returned genuine cluster data:
+    `splunk show shcluster-status --verbose` is a right-aligned `key : value` table
+    using the same raw (lowercase, underscored) field names as the REST content dict -
+    `dynamic_captain :`, `label :` - not human-prose labels; the parser's regexes were
+    adjusted to match and re-verified live. **Real result: captain=
+    `prdmilbbspksh04.sky.local`, election=dynamic, all 10 stretched-SH cluster members
+    `Up`, all local KV stores `ready`** - a fully healthy cluster, no leftover
+    static-election issue from any prior wave.
+  Full unit coverage: `tests/test_connectivity.py`, `tests/test_preflight.py` (fixture
+  now trimmed-but-verbatim from the real captured output), `tests/test_ssh_helpers.py`
+  (`run_plain_with_secret` never sends the secret in a logged/non-sensitive send). Also
+  fixed a pre-existing test-isolation bug surfaced by `.env` now having real
+  `SPLUNK_API_*` values: `tests/test_credentials.py`'s env-clearing fixture didn't
+  stop `_load_dotenv()` from re-populating "cleared" vars straight from the real
+  `.env` file.
+
 ---
 
 ## Must-do before first production live run
@@ -185,7 +256,23 @@ Open items, roughly in priority order.
   gateway itself (same signature as the broken test hosts below) — the one node out of
   the entire prod fleet where root doesn't connect. Looks like an isolated CyberArk
   entitlement gap for this specific host/identity pair, not a systemic prod issue —
-  flag it to whoever manages the CyberArk safes.
+  flag it to whoever manages the CyberArk safes. **Still broken as of 2026-09-16** —
+  confirmed separate from the expired-password fix below (different failure signature,
+  different ticket).
+
+- [x] **Full-fleet prod connectivity scan found 5 more Roma-site hosts with expired
+  root passwords beyond `dp01` - now fixed and re-verified** (2026-09-09) — the
+  2026-07-03 finding above was from a 9-host sample (1 per role × site) and only caught
+  `prdrmlbbspkdp01`. A full 25-host × splunk+root sweep today found **splunk: 25/25 OK**
+  (first full confirmation) but **root: 19/25 OK, 6 FAIL** - `prdrmlbbspkdp01` (known,
+  outright auth-reject) plus 5 more, all on the **Roma site**, all expired-password (not
+  auth-reject): `prdrmlbbspkfw01`, `prdrmlbbspksh02`, `prdrmlbbspksh05`,
+  `prdrmlbbspkix02`, `prdrmlbbspkix03`. Milano root was 100% clean - this looks like a
+  Roma-site-specific credential rotation gap, not scattered/random. Operator opened a
+  CyberArk ticket for the expired-password issue same day; re-tested all 5 after the fix
+  landed - **5/5 OK, `whoami='root'`.** `prdrmlbbspkdp01` re-tested separately and
+  confirmed still failing (see above - unaffected by this fix, as expected given the
+  different failure signature).
 
 - [ ] **BLOCKED: Root identity connectivity is broken in test** — ran
   `check-connectivity --identity root --environment test` (2026-07-03) against all 7
@@ -216,15 +303,17 @@ Open items, roughly in priority order.
   bug below (both fixed); a full run still hasn't completed without operator
   intervention.
 
-- [ ] **Verify `backup_crontab` restores correctly on a real forwarder** — fixed a bug
-  this session where `disable_crontab` deleted the splunk user's crontab with nothing
-  backing it up first (`enable_crontab` restored from a file that was never written).
-  `backup_crontab` (`crontab -l > /appl/home/splunk/crontab.backup` — path updated
-  2026-07-03 to the shared `/appl/home/splunk` scratch dir used on every node) now runs
-  first on both
-  the forwarder role and the `prdmilbbspkfw02` override, and it's unit-tested that the
-  sequencing and filename match — but not yet verified against a real node's actual
-  crontab.
+- [x] **Verified `backup_crontab` restores correctly on a real forwarder** (2026-09-11)
+  — tested live against real prod `prdrmlbbspkfw01` (splunk identity only, Splunk itself
+  never touched - these 3 actions don't need it stopped). Took an independent read-only
+  `crontab -l` capture before touching anything (not just trusting the tool's own
+  backup), then ran `backup_crontab` → `disable_crontab` → `enable_crontab` for real:
+  backup file content matched the live crontab exactly (and is clean plain text, no
+  terminal color codes - those only appear in the interactive `crontab -l` display, not
+  the redirected file); `disable_crontab`'s "really delete...yes" confirmation handling
+  worked correctly, `crontab -l` right after correctly showed `no crontab for splunk`
+  (exit 1 - expected); final independent `crontab -l` capture was **byte-identical** to
+  the original. All 3 actions OK.
 
 ---
 

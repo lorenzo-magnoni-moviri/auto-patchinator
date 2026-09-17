@@ -1,8 +1,10 @@
 from auto_patchinator.actions.sequences import NodeRole
 from auto_patchinator.actions.types import Identity
+from auto_patchinator.executor.credentials import Credentials
 from auto_patchinator.executor.ssh import (
     INDEXER_SPLUNK_SU,
     PASSWORD_EXPIRED_PATTERN,
+    PROMPT_MARKER,
     CommandResult,
     SSHConnection,
     login_username,
@@ -69,3 +71,34 @@ def test_password_expired_pattern_matches_real_banner_text():
 
 def test_password_expired_pattern_does_not_match_normal_shell_prompt():
     assert not PASSWORD_EXPIRED_PATTERN.search("[splunk@tstmilbbspkdp01 ~]$ ")
+
+
+class _FakeSession:
+    """Records every send() call (and whether it was marked sensitive), and always
+    responds as if the command completed successfully."""
+
+    def __init__(self):
+        self.sends: list[tuple[str, bool]] = []
+
+    def send(self, text, sensitive=False):
+        self.sends.append((text, sensitive))
+
+    def read_until(self, pattern, timeout=30):
+        return f"...\r\nAP_EXIT_CODE:0\r\n{PROMPT_MARKER}"
+
+
+def test_run_plain_with_secret_never_sends_the_secret_in_the_command_itself():
+    conn = SSHConnection("host01", Identity.SPLUNK, NodeRole.DEPLOYER, Credentials("u", "p"))
+    fake_session = _FakeSession()
+    conn._session = fake_session  # bypass connect() - this only tests run_plain_with_secret
+
+    result = conn.run_plain_with_secret('splunk show shcluster-status -u "admin:$AP_SECRET"', "hunter2")
+
+    assert result.success
+    secret_sends = [text for text, sensitive in fake_session.sends if sensitive]
+    assert len(secret_sends) == 1
+    assert "hunter2" in secret_sends[0]  # the ONE sensitive send carries the real secret
+
+    non_sensitive_sends = [text for text, sensitive in fake_session.sends if not sensitive]
+    assert all("hunter2" not in text for text in non_sensitive_sends)  # never in a logged send
+    assert any("$AP_SECRET" in text for text in non_sensitive_sends)  # the command references it by name

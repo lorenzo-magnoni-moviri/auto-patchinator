@@ -335,3 +335,7 @@ class DryRunConnection:
     def run_interactive(self, script: tuple[ExpectStep, ...], timeout: float = 60) -> CommandResult:
         rendered = " -> ".join(shlex.quote(step.send) for step in script)
         return CommandResult(exit_code=0, output=f"[dry-run] {self.hostname} ({self.identity.value}) $ {rendered}")
+
+    def run_plain_with_secret(self, command: str, secret: str, timeout: float = 60) -> CommandResult:
+        # No real secret handling needed in dry-run - nothing is ever sent anywhere.
+        return self.run_plain(command, timeout)

@@ -19,6 +19,7 @@ class ActionKind(str, Enum):
     INTERACTIVE = "interactive"
     MANUAL = "manual"
     WAIT = "wait"
+    CLUSTER_WAIT = "cluster_wait"  # poll a Splunk cluster health condition until met or timeout
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ class Action:
     command: str | None = None
     script: tuple[ExpectStep, ...] = field(default_factory=tuple)
     wait_seconds: int | None = None
+    poll_interval_seconds: int | None = None
     note: str | None = None
     timeout_seconds: int = DEFAULT_COMMAND_TIMEOUT
 
@@ -52,5 +54,7 @@ class Action:
             raise ValueError(f"action {self.name!r}: INTERACTIVE action requires a script")
         if self.kind == ActionKind.WAIT and self.wait_seconds is None:
             raise ValueError(f"action {self.name!r}: WAIT action requires wait_seconds")
-        if self.kind in (ActionKind.PLAIN, ActionKind.INTERACTIVE) and self.identity is None:
+        if self.kind == ActionKind.CLUSTER_WAIT and self.poll_interval_seconds is None:
+            raise ValueError(f"action {self.name!r}: CLUSTER_WAIT action requires poll_interval_seconds")
+        if self.kind in (ActionKind.PLAIN, ActionKind.INTERACTIVE, ActionKind.CLUSTER_WAIT) and self.identity is None:
             raise ValueError(f"action {self.name!r}: {self.kind.value} action requires an identity")

@@ -236,7 +236,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     # for the plan summary, the pretest, and the controller (CLUSTER_WAIT actions).
     splunk_api_credentials = load_splunk_api_credentials()
 
-    print_plan_summary(run_plan, inventory)
+    print_plan_summary(run_plan, inventory, splunk_api_credentials)
     if args.dry_run:
         print(green("MODE: DRY-RUN - every action will only be simulated, nothing runs on any host."))
         credentials = None
@@ -316,7 +316,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     controller = RunController(
         run_plan, state, args.state_dir, connection_factory, inventory,
         dry_run=args.dry_run, full_auto=args.full_auto_mode, show_explanations=show_explanations,
-        max_parallel_hosts=args.max_parallel_hosts,
+        max_parallel_hosts=args.max_parallel_hosts, splunk_api_credentials=splunk_api_credentials,
     )
     controller.run()
 

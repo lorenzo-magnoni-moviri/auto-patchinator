@@ -123,6 +123,34 @@ def clean_kvstore(splunk_bin: str) -> Action:
     )
 
 
+def wait_for_shcluster_member_healthy(splunk_bin: str) -> Action:
+    """Poll this search head's own search-head-cluster membership status after it
+    restarts, until it reports healthy or the timeout elapses - the search-head half
+    of TODO.md's "Cluster status validation via Splunk API" (indexer cluster is out
+    of scope here). Executed via `splunk show shcluster-status --verbose -auth
+    "<user>:<password>"` over the same SSH session as everything else
+    (runner/controller.py's _execute_cluster_wait; parsing in executor/splunk_cli.py)
+    - `-auth`, not `-u` (see clean_kvstore-adjacent findings in TODO.md, and
+    captain_revert_dynamic's own -auth usage above). Needs Splunk API credentials
+    (SPLUNK_API_USER + SPLUNK_API_PASSWORD in .env); forced manual (verify by hand)
+    if they aren't configured - see runner/controller.py's is_forced_manual."""
+    return Action(
+        name="wait_for_shcluster_member_healthy",
+        kind=ActionKind.CLUSTER_WAIT,
+        identity=Identity.SPLUNK,
+        poll_interval_seconds=15,
+        timeout_seconds=600,  # cluster rejoin + artifact sync after a restart can take a while
+        note=(
+            "Confirm this host's own search-head-cluster membership is healthy before "
+            "moving on - splunk show shcluster-status --verbose finds it in the "
+            "'Members:' section:\n"
+            f"   {splunk_bin} show shcluster-status --verbose -auth <user>:<password>\n"
+            "Look for THIS host's own entry - confirm status: Up, out_of_sync_node: 0, "
+            "restart_required: 0."
+        ),
+    )
+
+
 def backup_crontab() -> Action:
     return Action(
         name="backup_crontab",
@@ -190,8 +218,13 @@ def indexer_sequences() -> RoleSequences:
 
 
 def search_head_simple_sequences() -> RoleSequences:
-    # No KVStore clean and no captain handling for the 3-node extra cluster.
-    return RoleSequences(stop_per_node=_default_stop(SPLUNK_BIN), start_per_node=_default_start(SPLUNK_BIN))
+    # No KVStore clean and no captain handling for the 3-node extra cluster - it does
+    # have its own SHC captain/election (confirmed live, 2026-09-16 - see TODO.md),
+    # just not one this tool coordinates a transfer/revert around.
+    return RoleSequences(
+        stop_per_node=_default_stop(SPLUNK_BIN),
+        start_per_node=(*_default_start(SPLUNK_BIN), wait_for_shcluster_member_healthy(SPLUNK_BIN)),
+    )
 
 
 def captain_transfer_static(other_site_label: str, new_captain_host: str | None) -> Action:
@@ -251,6 +284,7 @@ def search_head_stretched_sequences() -> RoleSequences:
             daemon_reload(),
             clean_kvstore(SPLUNK_BIN),
             start_splunk(SPLUNK_BIN),
+            wait_for_shcluster_member_healthy(SPLUNK_BIN),
         ),
     )
 

@@ -24,7 +24,10 @@ def test_search_head_stretched_cleans_kvstore_before_starting():
     seq = get_role_sequences("anyhost", NodeRole.SEARCH_HEAD_STRETCHED)
     names = [a.name for a in seq.start_per_node]
     assert names.index("clean_kvstore") < names.index("start_splunk")
-    assert names == ["enable_boot_start", "daemon_reload", "clean_kvstore", "start_splunk"]
+    assert names == [
+        "enable_boot_start", "daemon_reload", "clean_kvstore", "start_splunk",
+        "wait_for_shcluster_member_healthy",
+    ]
 
 
 def test_clean_kvstore_skips_the_interactive_confirmation():
@@ -74,11 +77,12 @@ def test_host_override_replaces_role_sequence():
 
 
 def test_timeouts_60s_default_900s_for_splunk_stop_start():
+    long_timeouts = {"stop_splunk": 900, "start_splunk": 900, "wait_for_shcluster_member_healthy": 600}
     for role in NodeRole:
         seq = get_role_sequences("anyhost", role)
         for actions in (seq.stop_per_node, seq.start_per_node):
             for action in actions:
-                expected = 900 if action.name in ("stop_splunk", "start_splunk") else 60
+                expected = long_timeouts.get(action.name, 60)
                 assert action.timeout_seconds == expected, action.name
 
 

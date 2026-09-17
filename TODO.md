@@ -339,15 +339,48 @@ Open items, roughly in priority order.
   - Revert: re-enable dynamic election on all members, then bootstrap from the captain.
   Keep both as manual fallbacks if the API call fails.
 
-- [ ] **Cluster status validation via Splunk API** — add automated checks at key
-  points in the sequence using the Splunk REST API (via `load_splunk_api_credentials()`):
-  - **Indexer cluster**: after each indexer restarts, poll
-    `GET /services/cluster/master/peers` until the peer is `Up` and S&R factor is met.
-  - **Search head cluster**: after each SH restarts, poll
-    `GET /services/shcluster/member/peers` until the member is `Up` and artifact
-    replication is complete.
-  - Implement as a `WAIT`-kind action with a configurable timeout and a live progress
-    line ("waiting for SH cluster... 3/5 members up").
+- [x] **Cluster status validation via Splunk API - search head side done** (2026-09-16).
+  Indexer cluster (poll `GET /services/cluster/master/peers`/S&R factor) is still open -
+  out of scope for this pass, the operator asked for the search-head half specifically.
+  - New `ActionKind.CLUSTER_WAIT` (`actions/types.py`, new `Action.poll_interval_seconds`
+    field) and `wait_for_shcluster_member_healthy()` (`actions/sequences.py`), appended
+    after `start_splunk` in **both** `search_head_stretched_sequences()` and
+    `search_head_simple_sequences()`'s start halves - polls this host's own membership
+    entry until healthy or `timeout_seconds` (600s) elapses, `poll_interval_seconds`
+    (15s) apart.
+  - Deliberately **not** the REST API this item originally sketched
+    (`GET /services/shcluster/member/peers`) - built on the same `splunk show
+    shcluster-status --verbose -auth "<user>:<password>"` CLI pattern the pretest
+    already proved reliable (see the `-u` → `-auth` entry above), parsed by a new
+    shared module, `executor/splunk_cli.py` (`parse_shcluster_members`, `find_member`,
+    `member_health` - pure functions, no I/O). "Healthy" = `status: Up`,
+    `out_of_sync_node: 0`, `restart_required: 0` all together - no single field
+    observed so far reads as directly "artifact replication complete" (this item's
+    original wording); `reported_preexisting_artifacts` looked like the closest
+    candidate but its exact semantics aren't confirmed, so it's deliberately not
+    relied on - revisit if a real poll run shows a member stuck healthy-looking-but-
+    not, or vice versa.
+  - Runs as the **splunk** identity, no root needed (Splunk admin credentials
+    authorize it, not the OS identity) - reuses `SSHConnection.run_plain_with_secret`
+    (the pretest's audit-log-safe password handling) and, in automatic mode, the same
+    per-host connection cache as every other action on that host.
+  - **Forced manual when Splunk API credentials aren't configured** (`is_forced_manual`
+    extended, same pattern as `MANUAL_ONLY_IDENTITIES`) - the operator verifies cluster
+    health by hand instead of the check being silently skipped.
+  - `--dry-run` support (`DryRunConnection.run_plain_with_secret`, new) - simulates
+    success immediately, no real polling, consistent with every other action kind.
+  - New tests: `tests/test_splunk_cli.py` (member-section parsing against real
+    captured, CRLF-included output - same CRLF bug class as the pretest's kvstore fix,
+    guarded against directly), `tests/test_controller_cluster_wait.py` (healthy-
+    immediately, unhealthy-then-healthy-after-N-polls, timeout, connection-error,
+    dry-run, forced-manual-without-credentials). Live-verified (2026-09-16): the real
+    parsing chain (fresh `shcluster-status --verbose` call → `parse_shcluster_members`
+    → `find_member` → `member_health`) against `prdrmlbbspksh01` - correctly parsed
+    all 10 real cluster members and evaluated the host healthy. **Not yet verified
+    against a real restart** (i.e. actually watching the poll loop transition from
+    unhealthy to healthy after a live `start_splunk`) - do that deliberately the next
+    time a real search head restart happens, rather than assuming the poll-loop
+    mechanics are right just because the parsing and the dry-run path are.
 
 - [ ] **Automate `send_mail`** — every Excel step ends with a manual `send_mail` action.
   Implement SMTP sending (server / credentials from `.env`, recipients configurable per

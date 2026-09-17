@@ -52,9 +52,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Protocol
 
-from auto_patchinator.actions.sequences import CRONTAB_BACKUP
+from auto_patchinator.actions.sequences import CRONTAB_BACKUP, splunk_bin_for
 from auto_patchinator.actions.types import Action, ActionKind, Identity
 from auto_patchinator.config.inventory import Inventory
+from auto_patchinator.executor.splunk_cli import find_member, member_health, parse_shcluster_members
 from auto_patchinator.executor.ssh import su_command
 from auto_patchinator.plan.run_plan import RunStepPlan
 from auto_patchinator.state import store
@@ -73,6 +74,7 @@ class Connection(Protocol):
     def close(self) -> None: ...
     def run_plain(self, command: str, timeout: float = 60): ...
     def run_interactive(self, script, timeout: float = 60): ...
+    def run_plain_with_secret(self, command: str, secret: str, timeout: float = 60): ...
 
 
 ConnectionFactory = Callable[..., Connection]
@@ -94,6 +96,7 @@ _AUTO_LABELS = {
     "backup_crontab": "backing up crontab",
     "disable_crontab": "disabling crontab",
     "enable_crontab": "restoring crontab",
+    "wait_for_shcluster_member_healthy": "waiting for search head cluster membership",
 }
 
 _AUTO_LABEL_WIDTH = 50  # pad so the DONE/FAILED column lines up
@@ -123,6 +126,10 @@ _GUIDE_DESCRIPTIONS = {
         "crontab command is aliased to 'crontab -i': answer 'yes' at the confirmation."
     ),
     "enable_crontab": f"Restore the crontab from the {CRONTAB_BACKUP} copy.",
+    "wait_for_shcluster_member_healthy": (
+        "Confirm this host rejoined the search head cluster cleanly after restarting - "
+        "polls up to 10 minutes for status=Up, out_of_sync_node=0, restart_required=0."
+    ),
 }
 
 
@@ -172,15 +179,27 @@ class _HostConnections:
             self.drop(identity)
 
 
-def is_forced_manual(inventory: Inventory, scope: str, action: Action) -> bool:
+def is_forced_manual(
+    inventory: Inventory, scope: str, action: Action, splunk_api_credentials=None
+) -> bool:
     if action.kind == ActionKind.MANUAL:
         return True
+    if action.kind == ActionKind.CLUSTER_WAIT:
+        # Needs Splunk admin credentials (not an SSH identity) - if they're not
+        # configured, the operator has to verify cluster health by hand instead.
+        return not (
+            splunk_api_credentials
+            and splunk_api_credentials.username
+            and splunk_api_credentials.password
+        )
     if scope in (PRE_GROUP_SCOPE, POST_GROUP_SCOPE) or action.identity is None:
         return False
     return inventory.get(scope).is_manual_only(action.identity)
 
 
-def print_plan_summary(run_plan: list[RunStepPlan], inventory: Inventory) -> None:
+def print_plan_summary(
+    run_plan: list[RunStepPlan], inventory: Inventory, splunk_api_credentials=None
+) -> None:
     env = inventory.environment.upper()
     if env == "PROD":
         print(red("\n*** PRODUCTION ENVIRONMENT ***"))
@@ -198,7 +217,9 @@ def print_plan_summary(run_plan: list[RunStepPlan], inventory: Inventory) -> Non
         for hostname, actions in step_plan.per_host_actions.items():
             for action in actions:
                 ident = action.identity.value if action.identity else "-"
-                forced = action.kind != ActionKind.MANUAL and is_forced_manual(inventory, hostname, action)
+                forced = action.kind != ActionKind.MANUAL and is_forced_manual(
+                    inventory, hostname, action, splunk_api_credentials
+                )
                 manual_note = " [MANUAL ONLY on this host]" if forced else ""
                 print(f"    [{hostname}, {ident}] {action.name} ({action.kind.value}){manual_note}")
         for action in step_plan.post_group_actions:
@@ -218,6 +239,7 @@ class RunController:
         full_auto: bool = False,
         show_explanations: bool | None = False,
         max_parallel_hosts: int = 1,
+        splunk_api_credentials=None,
     ) -> None:
         self._plans = {p.excel_step: p for p in run_plan}
         self._order = [p.excel_step for p in run_plan]
@@ -226,6 +248,9 @@ class RunController:
         self._connection_factory = connection_factory
         self._inventory = inventory
         self._dry_run = dry_run
+        # Only consumed by CLUSTER_WAIT actions (post-restart cluster-health polling) -
+        # None means those are forced manual instead (see is_forced_manual).
+        self._splunk_api_credentials = splunk_api_credentials
         self._locked_mode: str | None = "auto" if full_auto else None
         # None = not yet decided; asked once, the first time manual guide mode is used.
         self._show_explanations: bool | None = show_explanations
@@ -914,6 +939,10 @@ class RunController:
                 self._save()
                 return
 
+            if action.kind == ActionKind.CLUSTER_WAIT:
+                self._execute_cluster_wait(scope, action, action_state, quiet, connections, ok_prefix)
+                return
+
             role = self._inventory.get(scope).role if scope not in (PRE_GROUP_SCOPE, POST_GROUP_SCOPE) else None
             if connections is not None:
                 connection = connections.get(action.identity)
@@ -958,8 +987,83 @@ class RunController:
             _log.exception("error running %s / %s", scope, action.name)
         self._save()
 
+    def _execute_cluster_wait(
+        self,
+        scope: str,
+        action: Action,
+        action_state: ActionState,
+        quiet: bool,
+        connections: "_HostConnections | None",
+        ok_prefix: str,
+    ) -> None:
+        """CLUSTER_WAIT: poll `splunk show shcluster-status --verbose -auth ...` for
+        `scope`'s own member entry until healthy or action.timeout_seconds elapses.
+        Only reached when Splunk API credentials are configured - is_forced_manual
+        routes this to a manual confirmation otherwise, so self._splunk_api_credentials
+        is never None here. No per-poll console output (quiet or not) - a poll can run
+        for minutes, and printing here would fight with _attempt_with_retry's own
+        progress_line/animated-dots wrapper around this whole call; each attempt is
+        still logged to the DEBUG audit log, and the final health description is
+        always in action_state.output/.error for the standard OK/FAILED line after."""
+        if self._dry_run:
+            action_state.status = ActionStatus.SUCCESS
+            action_state.output = "simulated (dry-run) - cluster health not actually polled"
+            if not quiet:
+                print(f"{green(ok_prefix)}: {scope} / {action.name}")
+            _log.info("success %s / %s (dry-run, simulated)", scope, action.name)
+            self._save()
+            return
+
+        role = self._inventory.get(scope).role
+        owns_connection = connections is None
+        if connections is not None:
+            connection = connections.get(action.identity)
+        else:
+            connection = self._connection_factory(hostname=scope, identity=action.identity, role=role)
+            connection.connect()
+
+        creds = self._splunk_api_credentials
+        command = f'{splunk_bin_for(role)} show shcluster-status --verbose -auth "{creds.username}:$AP_SECRET"'
+        deadline = time.monotonic() + action.timeout_seconds
+        description = "no poll attempt completed"
+        try:
+            while True:
+                result = connection.run_plain_with_secret(command, creds.password, timeout=30)
+                fields = find_member(parse_shcluster_members(result.output), scope)
+                healthy, description = member_health(fields)
+                _log.debug("cluster_wait poll %s / %s: healthy=%s %s", scope, action.name, healthy, description)
+                if healthy:
+                    action_state.status = ActionStatus.SUCCESS
+                    action_state.output = f"member healthy: {description}"
+                    break
+                if time.monotonic() >= deadline:
+                    action_state.status = ActionStatus.FAILED
+                    action_state.error = (
+                        f"timed out after {action.timeout_seconds}s waiting for a healthy "
+                        f"member status (last: {description})"
+                    )
+                    break
+                time.sleep(action.poll_interval_seconds)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the operator, not swallowed
+            if connections is not None:
+                connections.drop(action.identity)
+            action_state.status = ActionStatus.FAILED
+            action_state.error = str(exc)
+            _log.exception("error running %s / %s", scope, action.name)
+        finally:
+            if owns_connection:
+                connection.close()
+
+        if action_state.status == ActionStatus.SUCCESS:
+            _log.info("success %s / %s: %s", scope, action.name, action_state.output)
+            if not quiet:
+                print(f"{green(ok_prefix)}: {scope} / {action.name}")
+        elif action_state.error:
+            _log.error("failed %s / %s: %s", scope, action.name, action_state.error)
+        self._save()
+
     def _is_forced_manual(self, scope: str, action: Action) -> bool:
-        return is_forced_manual(self._inventory, scope, action)
+        return is_forced_manual(self._inventory, scope, action, self._splunk_api_credentials)
 
     def _ask_jump_target(self) -> int | None:
         raw = input(f"Jump to which step? ({', '.join(map(str, self._order))}, blank to cancel): ").strip()

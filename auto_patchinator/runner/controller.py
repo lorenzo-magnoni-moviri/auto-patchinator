@@ -101,6 +101,11 @@ _AUTO_LABELS = {
 
 _AUTO_LABEL_WIDTH = 50  # pad so the DONE/FAILED column lines up
 
+# Automatic-mode-only: actions the operator is asked about per host, right before they
+# run, instead of always running unattended - see _confirm_kvstore_clean_auto. Task-by-
+# task and manual guide modes already give the operator that control over every action.
+_CONFIRM_BEFORE_AUTO = {"clean_kvstore"}
+
 # Plain-language explanations shown by the manual guide ("why" line per action).
 _GUIDE_DESCRIPTIONS = {
     "stop_splunk": "Stop the Splunk process cleanly before the OS is patched.",
@@ -331,6 +336,9 @@ class RunController:
 
         clear_screen()
         print(bold(f"\n=== Step {excel_step} - {step_plan.verb.value.upper()} - {step_plan.label} ==="))
+        next_preview = self._next_step_preview(excel_step)
+        if next_preview:
+            print(next_preview)
         _log.info("entering step %s (%s - %s)", excel_step, step_plan.verb.value, step_plan.label)
 
         mode = self._locked_mode if self._locked_mode is not None else self._ask_step_mode(len(pending))
@@ -354,6 +362,17 @@ class RunController:
             if outcome != "continue":
                 return outcome
         return "next"
+
+    def _next_step_preview(self, excel_step: int) -> str | None:
+        """One-line heads-up on what immediately follows this step in the plan, printed
+        alongside the step header so the operator knows what's coming without waiting
+        for it to start. None once this is the last step."""
+        index = self._order.index(excel_step)
+        if index + 1 >= len(self._order):
+            return None
+        next_plan = self._plans[self._order[index + 1]]
+        hosts = ", ".join(next_plan.hostnames) if next_plan.hostnames else "-"
+        return f"Next: Step {next_plan.excel_step} - {next_plan.verb.value.upper()} - {next_plan.label} ({hosts})"
 
     # ------------------------------------------------------------------
     # Automatic mode: pre-group (sequential) -> per-host (optionally concurrent,
@@ -427,6 +446,10 @@ class RunController:
                     return "quit"
                 if self._is_forced_manual(scope, action):
                     outcome = self._confirm_manual_auto(scope, action, action_state)
+                elif action.name in _CONFIRM_BEFORE_AUTO:
+                    outcome = self._confirm_kvstore_clean_auto(
+                        hostname, scope, action, action_state, connections, animate
+                    )
                 else:
                     outcome = self._attempt_with_retry(
                         scope, action, action_state, auto=True, connections=connections, animate=animate
@@ -774,6 +797,39 @@ class RunController:
             self._save()
             print(green("    CONFIRMED"))
             return "continue"
+
+    def _confirm_kvstore_clean_auto(
+        self,
+        hostname: str,
+        scope: str,
+        action: Action,
+        action_state: ActionState,
+        connections: "_HostConnections | None",
+        animate: bool,
+    ) -> str:
+        """Ask before this specific host's restart whether to actually clean its KV
+        store - safe to decline when the downtime before this restart was too short for
+        the local copy to have gone stale. Held under _console_lock for the same reason
+        as _confirm_manual_auto: only one host's prompt is ever on screen / reading
+        stdin at a time in a concurrent automatic run, though other hosts keep running
+        in the background. Blank input (or anything but n/no) keeps today's always-clean
+        default."""
+        with self._console_lock:
+            answer = input(
+                yellow(f"\n[{hostname}] Also clean the KV store before starting? [Y/n/q] ")
+            ).strip().lower()
+            _log.info("operator answered %r for clean_kvstore on %s", answer, hostname)
+            if answer == "q":
+                return "quit"
+            if answer in ("n", "no"):
+                action_state.status = ActionStatus.SKIPPED
+                action_state.output = "operator declined KV store clean before restart"
+                self._save()
+                print(yellow("    SKIPPED"))
+                return "continue"
+        return self._attempt_with_retry(
+            scope, action, action_state, auto=True, connections=connections, animate=animate
+        )
 
     # ------------------------------------------------------------------
     # Shared execution + failure retry menu

@@ -503,7 +503,7 @@ be slow).
 | `disable_boot_start` | splunk | `sudo <bin> disable boot-start` | If splunk has no sudoers entry for this on a given node, rerun as root (no sudo) instead. |
 | `enable_boot_start` | root | `<bin> enable boot-start -systemd-managed 1 -user splunk -group splunk` | **Regenerates** the unit file from a template — a systemd override (drop-in) file holds the node's customizations, so nothing is lost; no backup/restore step needed. |
 | `daemon_reload` | root | `systemctl daemon-reload` | |
-| `clean_kvstore` | splunk | `<bin> clean kvstore --local --answer-yes` | Stretched search heads only; runs **before** `start_splunk`, while Splunk is still down. `--answer-yes` skips the interactive drop confirmation splunk otherwise asks - without it this hangs until timeout, since a PLAIN action can't answer a y/n prompt (found live, 2026-09-09 - see [§13](#13-known-issues-and-operational-findings)). |
+| `clean_kvstore` | splunk | `<bin> clean kvstore --local --answer-yes` | Stretched search heads only; runs **before** `start_splunk`, while Splunk is still down. `--answer-yes` skips the interactive drop confirmation splunk otherwise asks - without it this hangs until timeout, since a PLAIN action can't answer a y/n prompt (found live, 2026-09-09 - see [§13](#13-known-issues-and-operational-findings)). In automatic mode, the operator is asked per host right before it runs whether to actually clean it - skip it when the downtime was too short for the local copy to have gone stale. |
 | `start_splunk` | splunk | `sudo <bin> start` | |
 | `backup_crontab` | splunk | `crontab -l > /appl/home/splunk/crontab.backup` | Forwarders only; must precede `disable_crontab`. |
 | `disable_crontab` | splunk | interactive: `crontab -r` → expect `"really delete"` → send `yes` | The splunk user's `crontab` is aliased to `crontab -i`, which asks for confirmation before deleting. |
@@ -520,7 +520,7 @@ be slow).
 | `indexer` | same as deployer, indexer `<bin>` | same as deployer, indexer `<bin>` (S&R factor wait-and-check deferred to v2, see [§16](#16-roadmap)) |
 | `forwarder` | **backup crontab** → disable crontab → stop → disable boot-start | enable boot-start → daemon-reload → start → **restore crontab** |
 | `search_head_simple` | same as deployer | same as deployer (no KV-store clean, no captain handling — this is the separate 3-node cluster, not the stretched one) |
-| `search_head_stretched` | same as deployer | enable boot-start → daemon-reload → **clean_kvstore** → start (KV store is cleaned while Splunk is still down, not after starting it) |
+| `search_head_stretched` | same as deployer | enable boot-start → daemon-reload → **clean_kvstore** → start (KV store is cleaned while Splunk is still down, not after starting it; automatic mode asks per host whether to actually run it) |
 
 `prdmilbbspkfw02` (host override, replaces the forwarder sequence entirely):
 1. `backup_crontab`

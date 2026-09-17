@@ -160,6 +160,21 @@ def _two_step_dp01_plan(inventory):
     return build_run_plan(resolve_order(mapped), {1: ("dp01",)}, inventory)
 
 
+def test_step_header_previews_the_next_step(tmp_path, inventory, monkeypatch, capsys):
+    plan = _two_step_dp01_plan(inventory)
+    state = store.build_initial_state("t", "p.xlsx", "s", plan)
+    feed = iter(["T"] + ["d"] * 7)
+    monkeypatch.setattr("builtins.input", lambda *_: next(feed))
+    ctrl = RunController(plan, state, str(tmp_path), ExplodingConnectionFactory(), inventory)
+    ctrl.run()
+
+    out = capsys.readouterr().out
+    assert "=== Step 2 - STOP - Stop application Group 1 ===" in out
+    assert "Next: Step 4 - START - Start application Group 1 (dp01)" in out
+    # step 4 is the last step in this plan - no dangling "Next:" line after it
+    assert out.count("Next:") == 1
+
+
 def test_capital_T_locks_task_mode_for_all_remaining_steps(tmp_path, inventory, monkeypatch, capsys):
     plan = _two_step_dp01_plan(inventory)
     state = store.build_initial_state("t", "p.xlsx", "s", plan)

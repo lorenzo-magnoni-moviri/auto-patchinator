@@ -93,6 +93,48 @@ def test_automatic_mode_reuses_one_connection_per_host_per_identity(tmp_path, in
     assert len(factory.calls("close")) == 2  # closed once each at end of dp01's block
 
 
+def test_clean_kvstore_declined_in_automatic_mode_is_skipped_not_run(tmp_path, inventory, monkeypatch):
+    """clean_kvstore is only meaningful on search_head_stretched. In automatic mode the
+    operator is asked per host, right before it runs, whether to actually clean it - 'n'
+    skips it (and never touches the connection) without blocking the rest of the host's
+    sequence (start_splunk still runs)."""
+    plan = _start_step_plan(inventory, {1: ("shx01",)})
+    state = store.build_initial_state("t", "p.xlsx", "s", plan)
+    factory = RecordingConnectionFactory()
+    # mode=a, decline the kvstore-clean prompt, then ENTER for the two remaining forced-
+    # manual confirmations (wait_for_shcluster_member_healthy - no Splunk API credentials
+    # configured - and revert_captain_dynamic/send_mail).
+    feed = iter(["a", "n", "", "", ""])
+    monkeypatch.setattr("builtins.input", lambda *_: next(feed))
+    ctrl = RunController(plan, state, str(tmp_path), factory, inventory)
+    ctrl.run()
+
+    assert ctrl.state.is_complete()
+    action_states = {a.name: a for _, a in ctrl.state.steps[2].all_action_states()}
+    assert action_states["clean_kvstore"].status == ActionStatus.SKIPPED
+    assert action_states["start_splunk"].status == ActionStatus.SUCCESS
+    ran_commands = [call[3] for call in factory.calls("run")]
+    assert not any("clean kvstore" in cmd for cmd in ran_commands)
+
+
+def test_clean_kvstore_confirmed_in_automatic_mode_runs_it(tmp_path, inventory, monkeypatch):
+    """Blank input (the default, matching a plain ENTER) keeps today's always-clean
+    behavior - the prompt is opt-out, not opt-in."""
+    plan = _start_step_plan(inventory, {1: ("shx01",)})
+    state = store.build_initial_state("t", "p.xlsx", "s", plan)
+    factory = RecordingConnectionFactory()
+    feed = iter(["a", "", "", "", ""])
+    monkeypatch.setattr("builtins.input", lambda *_: next(feed))
+    ctrl = RunController(plan, state, str(tmp_path), factory, inventory)
+    ctrl.run()
+
+    assert ctrl.state.is_complete()
+    action_states = {a.name: a for _, a in ctrl.state.steps[2].all_action_states()}
+    assert action_states["clean_kvstore"].status == ActionStatus.SUCCESS
+    ran_commands = [call[3] for call in factory.calls("run")]
+    assert any("clean kvstore" in cmd for cmd in ran_commands)
+
+
 def test_automatic_mode_sequential_by_default_still_completes_all_hosts(tmp_path, inventory, monkeypatch):
     """max_parallel_hosts defaults to 1 - dp01 and fw01 both run, one at a time, with
     each host's own connections opened/closed independently."""

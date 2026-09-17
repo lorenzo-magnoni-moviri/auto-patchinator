@@ -277,6 +277,9 @@ def search_head_stretched_sequences() -> RoleSequences:
     # Captain transfer/revert are injected once per wave (first stop / last start)
     # by build_run_plan, not repeated per group. clean_kvstore must run before
     # start_splunk, not after - the KV store is cleaned while splunk is still down.
+    # It's only needed when the node was down long enough for its local copy to go
+    # stale, so automatic mode asks the operator per host, right before it runs
+    # (runner/controller.py's _confirm_kvstore_clean_auto) rather than always forcing it.
     return RoleSequences(
         stop_per_node=_default_stop(SPLUNK_BIN),
         start_per_node=(

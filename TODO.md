@@ -252,13 +252,15 @@ Open items, roughly in priority order.
   `prdrmlbbspkdp01`.** Confirms the PTY marker protocol and su flow in `executor/ssh.py`
   work correctly against the real `pas.prd.spk.root` gateway.
 
-- [ ] **`prdrmlbbspkdp01` root login rejected** — `Authentication failed` at the PAS
-  gateway itself (same signature as the broken test hosts below) — the one node out of
-  the entire prod fleet where root doesn't connect. Looks like an isolated CyberArk
-  entitlement gap for this specific host/identity pair, not a systemic prod issue —
-  flag it to whoever manages the CyberArk safes. **Still broken as of 2026-09-16** —
-  confirmed separate from the expired-password fix below (different failure signature,
-  different ticket).
+- [x] **`prdrmlbbspkdp01` root login rejected — fixed and re-verified** (2026-09-17) —
+  `Authentication failed` at the PAS gateway itself, the one node out of the entire
+  prod fleet where root didn't connect (isolated CyberArk entitlement gap for this
+  specific host/identity pair, tracked since 2026-07-03, confirmed still broken as
+  recently as 2026-09-16 - separate ticket/issue from the Roma-wide expired-password
+  fix below). Re-checked via `check-connectivity --identity root --hosts
+  prdrmlbbspkdp01` after the operator's fix landed - **OK, `whoami='root'`.** This was
+  the last remaining root-connectivity gap in prod; every prod host's root identity
+  now works.
 
 - [x] **Full-fleet prod connectivity scan found 5 more Roma-site hosts with expired
   root passwords beyond `dp01` - now fixed and re-verified** (2026-09-09) — the

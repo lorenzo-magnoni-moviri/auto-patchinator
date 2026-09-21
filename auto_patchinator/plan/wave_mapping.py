@@ -58,8 +58,7 @@ def _find_host_sheet(wb: openpyxl.Workbook, hint: str) -> str:
         raise ValueError(
             f"Could not find the host sheet in {wb}. "
             f"Tried exact name {hint!r} and substring markers {_HOST_SHEET_MARKERS}. "
-            f"Available sheets: {wb.sheetnames}. "
-            f"Override with --host-sheet."
+            f"Available sheets: {wb.sheetnames}."
         )
     if len(candidates) == 1:
         return candidates[0]
@@ -68,7 +67,7 @@ def _find_host_sheet(wb: openpyxl.Workbook, hint: str) -> str:
         return current[0]
     raise ValueError(
         f"Multiple sheets could be the host sheet: {candidates} - not guessing which one is "
-        "current. Pass --host-sheet '<exact name>' to pick one."
+        "current."
     )
 
 

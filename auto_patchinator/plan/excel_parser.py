@@ -109,7 +109,7 @@ def _find_plan_sheet(sheetnames: list[str], hint: str) -> str:
         raise ValueError(f"no sheet named {hint!r}, found {sheetnames}")
     raise ValueError(
         f"multiple sheets could be the plan sheet: {candidates} - not guessing which one is "
-        "current. Pass --plan-sheet '<exact name>' to pick one."
+        "current."
     )
 
 

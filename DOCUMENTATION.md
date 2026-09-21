@@ -167,7 +167,7 @@ get started (the example has the same shape with placeholder/no `pas_gateway`).
 ```yaml
 stretched_sh_sites: [milano, roma]   # the two sites of the stretched SH cluster
 pas_port: 10100                      # appended as #10100 to every PAS login username
-pas_gateway: pas.sky.local           # default gateway; --pas-gateway overrides per-run
+pas_gateway: pas.sky.local           # gateway - no CLI override, this is the only source
 
 environments:
   prod:
@@ -244,21 +244,25 @@ Two subcommands: `run` and `check-connectivity`.
 |---|---|---|
 | `--excel PATH` | prompts interactively | See [§4.3](#43-the-wave-excel-file). |
 | `--inventory PATH` | `inventory/hosts.yaml` | Errors clearly if the default doesn't exist and nothing was passed. |
-| `--plan-sheet NAME` | `Plan` | Tolerates incidental trailing whitespace in the sheet's actual name (e.g. `'Plan '`); override if it's still not found, or if there's more than one sheet that could match (raises rather than guessing). |
-| `--host-sheet NAME` | `List Host NO IT` | Override if a wave's host sheet is named unusually and the substring match fails, or if the workbook keeps a stale `_old` copy alongside the current one and both look ambiguous (raises rather than guessing which is current). |
 | `--team-filter FILTER [FILTER ...]` | `AOM Sky CSO`, `AOM Splunk Broadband`, `Splunk Broadband` | `Gruppo_referente` values to match, case-insensitive. If a future wave uses yet another label and zero rows match, the tool warns and lists every label actually found in the sheet rather than silently resolving to an empty plan. |
 | `--environment {prod,test}` | `prod` | Filters `hosts.yaml` and selects the matching PAS suffixes. |
-| `--pas-gateway HOST[:PORT]` | from `hosts.yaml`'s `pas_gateway` | Only needed to override the inventory default for one run. |
 | `--dry-run` | off (i.e. **live** by default) | Simulates every action, no SSH, no credentials prompt. |
 | `--full-auto-mode` | off | Skips the per-step mode question; every step runs in automatic mode. |
 | `--verbose` | off | Manual guide's "why" line, pre-decided instead of asked interactively the first time manual guide is used. See [§9](#9-the-three-run-modes). |
-| `--max-parallel-hosts N` | `1` (sequential) | Automatic mode only - run up to `N` hosts' action lists concurrently within a step instead of one at a time. See [§9](#9-the-three-run-modes). |
+| `--max-parallel-hosts N` | `3` | Automatic mode only - run up to `N` hosts' action lists concurrently within a step instead of one at a time. Pass `1` for the old fully sequential behavior. See [§9](#9-the-three-run-modes). |
 | `--state-dir DIR` | `state` | |
 | `--reports-dir DIR` | `reports` | |
 | `--logs-dir DIR` | `logs` | |
 
 **Note the polarity:** a bare `auto-patchinator run` is a **live** run against
 **production**. Add `--dry-run` to simulate, `--environment test` to target test nodes.
+
+**Sheet names aren't a CLI option.** The plan sheet must be named `Plan` and the host
+sheet `List Host NO IT` - small naming variations are tolerated automatically (incidental
+whitespace in `Plan`'s name; any substring match on `"NO IT"`/`"No IT"` for the host
+sheet, deprioritizing anything that looks like a stale `_old` copy), but an ambiguous or
+genuinely missing sheet raises a clear error telling you the workbook doesn't match the
+expected format, rather than guessing which sheet is current.
 
 ### `auto-patchinator check-connectivity`
 
@@ -270,7 +274,6 @@ rotation.
 |---|---|---|
 | `--inventory PATH` | `inventory/hosts.yaml` | Same fallback as `run`. |
 | `--environment {prod,test}` | `prod` | |
-| `--pas-gateway HOST[:PORT]` | from `hosts.yaml` | |
 | `--identity {splunk,root,all}` | `splunk` | |
 | `--hosts HOSTNAME [HOSTNAME ...]` | all hosts in scope | Test a subset — useful to avoid hammering the whole fleet, see [§13](#13-known-issues-and-operational-findings). |
 | `--logs-dir DIR` | `logs` | |
@@ -641,13 +644,15 @@ behind it briefly. Choosing quit from one host's prompt stops every other host b
 its *next* action - an action already in flight always finishes, nothing is killed
 mid-SSH.
 
-Default is `1` because the PAS/CyberArk gateway's tolerance for concurrent sessions from
-one account isn't established - `executor/ssh.py`'s connect-retry delay is already tuned
-around gateway-side rate-limiting, and repeated connectivity testing has previously
-looked like it triggered an account's failed-attempt lockout counter (see
-[§13](#13-known-issues-and-operational-findings)). Start with a conservative `N` (e.g.
-2-3) on a live wave and watch for unexpected auth failures or slow gateway responses
-before pushing it higher.
+Default is `3` - within the conservative starting range this section used to recommend
+testing manually before the default was raised. The PAS/CyberArk gateway's tolerance for
+concurrent sessions from one account still isn't formally established beyond that -
+`executor/ssh.py`'s connect-retry delay is already tuned around gateway-side
+rate-limiting, and repeated connectivity testing has previously looked like it triggered
+an account's failed-attempt lockout counter (see
+[§13](#13-known-issues-and-operational-findings)). Pass `1` to fall back to fully
+sequential, or watch for unexpected auth failures or slow gateway responses before
+pushing `N` higher than 3 on a live wave.
 
 ### Task-by-task (`t` / `T`)
 
@@ -908,13 +913,13 @@ check `TODO.md` for anything more recent, since this list will drift.
 
 | Symptom | Likely cause | What to do |
 |---|---|---|
-| `WARNING: no PAS gateway configured` | Neither `--pas-gateway` nor `hosts.yaml`'s `pas_gateway` is set | Fill in `pas_gateway` in `hosts.yaml` (it shouldn't change month to month) |
+| `WARNING: no PAS gateway configured` | `hosts.yaml`'s `pas_gateway` isn't set (no CLI override exists) | Fill in `pas_gateway` in `hosts.yaml` (it shouldn't change month to month) |
 | `Authentication failed` at connect | Wrong/expired PAS password for that identity, or the identity isn't entitled on that specific host | Check `.env`'s `AP_PASSWORD`; if only one specific host fails, it's likely a CyberArk entitlement gap for that host (see [§13](#13-known-issues-and-operational-findings)) — not a code bug |
 | `PasswordExpiredError` | The PAS/CyberArk password for that identity has expired on the target host, triggering a forced password-change prompt the tool won't perform for you | Rotate the credential via CyberArk, then retry — do **not** repeatedly retry, each failure typically increments a lockout counter |
 | `TimeoutReadingShell` | Something appeared in the shell buffer the tool's regexes don't recognize (unexpected banner text, a prompt phrased differently than expected) — the login flow is now verified against the real prod gateway (see [§13](#13-known-issues-and-operational-findings)), but a new environment/banner variant could still surface this | Check `logs/run-<id>.log` at DEBUG level for the raw buffer content the regex failed to match |
 | Step re-asks the same question after a failure (didn't just move on) | This is by design — see [§9](#9-the-three-run-modes) | Use the retry menu: `[r]etry [d]one-manually [s]kip [q]uit` |
 | `group N has no hosts in the wave mapping` | The Excel host sheet doesn't list any host for that group that also exists in `hosts.yaml` | Check the wave's host sheet and `hosts.yaml` are consistent — a new host may need adding to the inventory |
-| `Could not find the host sheet` | The wave's host-listing sheet name doesn't contain `"NO IT"` | Pass `--host-sheet <exact name>` explicitly |
+| `Could not find the host sheet` / `no sheet named 'Plan'` | The workbook doesn't match the expected format - no sheet named `Plan`, or the host-listing sheet name doesn't contain `"NO IT"` | Fix the wave Excel to use the expected sheet names (see §4.3) - there's no CLI override for either sheet name |
 | Resumed run keeps re-showing steps you thought were done | Actions are only "done" once marked `SUCCESS` or `SKIPPED` — a step interrupted mid-action stays pending | Expected; the point of resume is exactly this — nothing is assumed done that wasn't recorded as such |
 | Inventory file not found | `--inventory` omitted and `inventory/hosts.yaml` doesn't exist yet | Copy from `inventory/hosts.example.yaml` |
 

@@ -43,9 +43,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=f"Path to the wave Vulnerability_Plan .xlsx. If omitted, looks for .xlsx files "
              f"in '{PLANS_DIR}/' (then the current directory) and prompts you to pick one.",
     )
-    run_parser.add_argument("--plan-sheet", default="Plan")
-    run_parser.add_argument("--host-sheet", default=HOST_SHEET_NAME,
-                            help=f"Sheet name for host→group mapping (default: '{HOST_SHEET_NAME}')")
     run_parser.add_argument(
         "--team-filter",
         nargs="+",
@@ -78,12 +75,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
              "pauses only for manual confirmations and failures.",
     )
     run_parser.add_argument(
-        "--pas-gateway",
-        default=None,
-        help="PAS/CyberArk SSH gateway, as 'host' or 'host:port' (default port 22). "
-             "Falls back to 'pas_gateway' in the inventory YAML.",
-    )
-    run_parser.add_argument(
         "--verbose",
         action="store_true",
         help="Show the reasoning behind each action in manual guide mode (the 'why' line), "
@@ -93,13 +84,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--max-parallel-hosts",
         type=int,
-        default=1,
+        default=3,
         metavar="N",
         help="In automatic mode, run this many hosts' action sequences concurrently within "
              "each step instead of one at a time; also used by the pre-patch pretest's "
-             "connectivity checks (default: 1, i.e. sequential - the PAS/CyberArk gateway's "
-             "tolerance for concurrent sessions isn't established, so this is opt-in). Only "
-             "affects automatic mode and the pretest's connectivity checks; task-by-task, "
+             "connectivity checks (default: 3; pass 1 for the old fully-sequential behavior). "
+             "Only affects automatic mode and the pretest's connectivity checks; task-by-task, "
              "manual guide, and the pretest's Splunk API checks are always sequential. Has "
              "no effect on a step/check with only one host.",
     )
@@ -115,12 +105,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     conn_parser.add_argument("--environment", default="prod", choices=["prod", "test"],
                              help="Which environment to target (default: prod)")
-    conn_parser.add_argument(
-        "--pas-gateway",
-        default=None,
-        help="PAS/CyberArk SSH gateway, as 'host' or 'host:port' (default port 22). "
-             "Falls back to 'pas_gateway' in the inventory YAML.",
-    )
     conn_parser.add_argument("--logs-dir", default="logs")
     conn_parser.add_argument(
         "--identity",
@@ -188,17 +172,34 @@ def _prompt_for_excel_path() -> str:
     return raw
 
 
-def _resolve_pas_gateway(cli_value: str | None, inventory) -> tuple[str | None, int]:
-    """Pick the gateway from --pas-gateway or the inventory; parse optional ':port'."""
-    value = cli_value or inventory.pas_gateway
+def _resolve_pas_gateway(inventory) -> tuple[str | None, int]:
+    """Parse 'pas_gateway' from the inventory YAML (optional ':port')."""
+    value = inventory.pas_gateway
     if not value:
         return None, 22
     host, sep, port = str(value).partition(":")
     return host, int(port) if sep else 22
 
 
-def _load_team_steps(excel: str, plan_sheet: str, team_filter: list[str]):
-    raw_steps = load_plan_sheet(excel, plan_sheet)
+def _excel_format_error(exc: ValueError) -> None:
+    """Every sheet lookup (plan sheet, host sheet) raises ValueError rather than
+    guessing when the workbook doesn't match what this script expects - re-raise as a
+    SystemExit with that guidance spelled out, instead of a bare traceback."""
+    raise SystemExit(
+        f"{exc}\n\n"
+        "The wave Excel must follow the expected format for this script to understand "
+        "it: a 'Plan' sheet with the step rows, and a host->group sheet named "
+        "'List Host NO IT' (small naming variations, e.g. incidental whitespace or a "
+        "'NO IT' substring, are tolerated automatically - but an ambiguous or missing "
+        "sheet is never guessed at). Fix the workbook and rerun."
+    )
+
+
+def _load_team_steps(excel: str, team_filter: list[str]):
+    try:
+        raw_steps = load_plan_sheet(excel)
+    except ValueError as exc:
+        _excel_format_error(exc)
     mapped, unmapped = map_team_steps(raw_steps, team_filter)
     if not mapped:
         labels = sorted({r.gruppo_referente for r in raw_steps if r.gruppo_referente})
@@ -220,18 +221,21 @@ def cmd_run(args: argparse.Namespace) -> None:
     args.excel = args.excel or _prompt_for_excel_path()
     args.inventory = _resolve_inventory_path(args.inventory)
 
-    mapped = _load_team_steps(args.excel, args.plan_sheet, args.team_filter)
+    mapped = _load_team_steps(args.excel, args.team_filter)
     ordered_steps = resolve_order(mapped)
     inventory = load_inventory(args.inventory, args.environment)
-    wave_mapping = load_wave_mapping_from_excel(args.excel, inventory, sheet_name=args.host_sheet)
+    try:
+        wave_mapping = load_wave_mapping_from_excel(args.excel, inventory)
+    except ValueError as exc:
+        _excel_format_error(exc)
     if not wave_mapping:
         print(
-            f"WARNING: no hosts found in '{args.host_sheet}' sheet that match the inventory — "
+            f"WARNING: no hosts found in '{HOST_SHEET_NAME}' sheet that match the inventory — "
             "check that the Excel host sheet and hosts.yaml are consistent."
         )
     run_plan = build_run_plan(ordered_steps, wave_mapping, inventory)
 
-    gateway_host, gateway_port = _resolve_pas_gateway(args.pas_gateway, inventory)
+    gateway_host, gateway_port = _resolve_pas_gateway(inventory)
     # Just an env/`.env` read, never prompts - safe to resolve once, early, and reuse
     # for the plan summary, the pretest, and the controller (CLUSTER_WAIT actions).
     splunk_api_credentials = load_splunk_api_credentials()
@@ -245,8 +249,8 @@ def cmd_run(args: argparse.Namespace) -> None:
         if gateway_host:
             print(f"PAS gateway: {gateway_host}:{gateway_port}")
         else:
-            print(yellow("WARNING: no PAS gateway configured (--pas-gateway or 'pas_gateway' in the "
-                         "inventory) - will SSH directly to each node, which PAS-fronted nodes refuse."))
+            print(yellow("WARNING: no PAS gateway configured ('pas_gateway' in the inventory) - "
+                         "will SSH directly to each node, which PAS-fronted nodes refuse."))
         credentials = prompt_credentials()
         # Pretest is LIVE-only - --dry-run's whole point is "no SSH at all" (see
         # DOCUMENTATION.md), which a connectivity check would violate. Never aborts
@@ -293,7 +297,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         "run %s | mode=%s | full_auto=%s | verbose=%s | max_parallel_hosts=%s | environment=%s | "
         "excel=%s | host_sheet=%s | team_filter=%s | pas_gateway=%s:%s",
         state.run_id, "dry-run" if args.dry_run else "LIVE", args.full_auto_mode, args.verbose,
-        args.max_parallel_hosts, args.environment, args.excel, args.host_sheet, args.team_filter,
+        args.max_parallel_hosts, args.environment, args.excel, HOST_SHEET_NAME, args.team_filter,
         gateway_host, gateway_port,
     )
     for p in run_plan:
@@ -329,12 +333,12 @@ def cmd_check_connectivity(args: argparse.Namespace) -> None:
     log_path = setup_run_logging(args.logs_dir, f"check-connectivity-{datetime.now():%Y%m%dT%H%M%S}")
     print(f"Logging to {log_path}")
     inventory = load_inventory(args.inventory, args.environment)
-    gateway_host, gateway_port = _resolve_pas_gateway(args.pas_gateway, inventory)
+    gateway_host, gateway_port = _resolve_pas_gateway(inventory)
     if gateway_host:
         print(f"PAS gateway: {gateway_host}:{gateway_port}")
     else:
-        print("WARNING: no PAS gateway configured (--pas-gateway or 'pas_gateway' in the "
-              "inventory) - will SSH directly to each node, which PAS-fronted nodes refuse.")
+        print("WARNING: no PAS gateway configured ('pas_gateway' in the inventory) - will SSH "
+              "directly to each node, which PAS-fronted nodes refuse.")
     credentials = prompt_credentials()
 
     identities: list[Identity] = []
@@ -374,7 +378,7 @@ def cmd_check_connectivity(args: argparse.Namespace) -> None:
 
 def _new_run_state(args: argparse.Namespace, run_plan):
     run_id = f"{Path(args.excel).stem}-{datetime.now():%Y%m%dT%H%M%S}"
-    return store.build_initial_state(run_id, args.excel, args.host_sheet, run_plan)
+    return store.build_initial_state(run_id, args.excel, HOST_SHEET_NAME, run_plan)
 
 
 def main() -> None:

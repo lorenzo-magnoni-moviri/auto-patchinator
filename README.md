@@ -50,8 +50,8 @@ auto-patchinator check-connectivity        # verify SSH to every host before a l
 
 `--excel` and `--inventory` are both optional: drop each month's wave file in a
 `plans/` directory and the tool will find it; the inventory defaults to
-`inventory/hosts.yaml`. `--pas-gateway` also isn't usually needed once it's set in
-`hosts.yaml`.
+`inventory/hosts.yaml`. The PAS/CyberArk gateway always comes from `hosts.yaml`'s
+`pas_gateway` - there's no CLI override.
 
 At the start of each step, choose how to run it: `a` automatic, `t` task-by-task, `m`
 manual guide (executes nothing, walks you through it by hand — no SSH command shown

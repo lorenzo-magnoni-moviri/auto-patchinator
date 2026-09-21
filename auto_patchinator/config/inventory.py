@@ -55,7 +55,7 @@ class Inventory:
     pas_port: int | None = None
     pas_splunk_suffix: str = _DEFAULT_PAS_SPLUNK_SUFFIX
     pas_root_suffix: str = _DEFAULT_PAS_ROOT_SUFFIX
-    pas_gateway: str | None = None   # "host" or "host:port"; --pas-gateway overrides
+    pas_gateway: str | None = None   # "host" or "host:port"; only source, no CLI override
 
     @property
     def pas_suffixes(self) -> dict[Identity, str]:

@@ -10,8 +10,11 @@ Open items, roughly in priority order.
   dependency ordering, wave/host mapping, role sequences, inventory, PAS login string
   building, and state persistence/resume. Run with `python -m pytest` (install with
   `pip install -e ".[test]"`).
-- [x] Auto-detect PAS gateway from inventory — `pas_gateway` in `hosts.yaml` is now the
-  default; `--pas-gateway` only needed to override.
+- [x] Auto-detect PAS gateway from inventory — `pas_gateway` in `hosts.yaml` is the only
+  source (2026-09-21: the `--pas-gateway` CLI override was removed entirely, along with
+  `--plan-sheet`/`--host-sheet` — a workbook that doesn't have a `Plan` sheet and a
+  `List Host NO IT`-ish host sheet now fails with a clear "must follow the expected
+  format" error instead of offering a per-run override).
 - [x] `run` defaults to LIVE execution; `--dry-run` is the opt-in simulate-only flag
   (previously the reverse).
 - [x] Three per-step operator modes: automatic (`a`/`A`, or `--full-auto-mode`),

@@ -380,6 +380,18 @@ Open items, roughly in priority order.
     `edit shcluster-config -mode captain` on the target.
   - Revert: re-enable dynamic election on all members, then bootstrap from the captain.
   Keep both as manual fallbacks if the API call fails.
+  - Prerequisite (2026-09-22, done): the pretest now checks splunk-identity
+    connectivity to the *whole* stretched-SH cluster (both sites), not just this
+    wave's own site, whenever the plan touches `search_head_stretched` at all - see
+    `preflight.py`'s "rest of the stretched SH cluster" block. Needed because
+    transfer/revert touch every member cluster-wide, and this now catches an
+    unreachable untouched-site host before the operator gets to that manual step,
+    even ahead of this item actually being automated.
+  - Still unresolved from the earlier design pass: all members of a stretched-SH
+    group get stopped concurrently in the same step (`--max-parallel-hosts`), so
+    there's no live peer left to hand off captaincy to at the moment of shutdown -
+    "transfer to a peer" doesn't map cleanly onto how this cluster is patched. Worth
+    deciding before building the transfer half specifically.
 
 - [x] **Cluster status validation via Splunk API - search head side done** (2026-09-16).
   Indexer cluster (poll `GET /services/cluster/master/peers`/S&R factor) is still open -

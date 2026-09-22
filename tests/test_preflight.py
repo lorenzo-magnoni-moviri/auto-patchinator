@@ -1,5 +1,6 @@
 """Tests for the pretest orchestration (preflight.py). No real SSH - check_connectivity
 and preflight._splunk_show are monkeypatched."""
+from auto_patchinator.actions.types import Identity
 from auto_patchinator.executor.connectivity import STATUS_FAIL, STATUS_OK, ConnectivityResult
 from auto_patchinator.executor.credentials import Credentials, SplunkApiCredentials
 from auto_patchinator.plan.action_mapping import map_team_steps
@@ -83,6 +84,24 @@ def _ok_connectivity(status=STATUS_OK, detail="whoami=ok"):
     block relies on that callback, not the return value."""
     def fake(host_items, identities, credentials, gateway_host, gateway_port, inventory,
               on_result=None, max_workers=1):
+        results = []
+        for hostname, _host in host_items:
+            for identity in identities:
+                result = ConnectivityResult(hostname, identity, status, detail)
+                results.append(result)
+                if on_result:
+                    on_result(result)
+        return results
+    return fake
+
+
+def _recording_connectivity(calls, status=STATUS_OK, detail="whoami=ok"):
+    """Like _ok_connectivity, but also records each call's (hostnames, identities) so
+    tests can assert exactly which hosts/identities a given connectivity block
+    covered."""
+    def fake(host_items, identities, credentials, gateway_host, gateway_port, inventory,
+              on_result=None, max_workers=1):
+        calls.append(([h for h, _ in host_items], list(identities)))
         results = []
         for hostname, _host in host_items:
             for identity in identities:
@@ -220,4 +239,73 @@ def test_connectivity_failure_marks_pretest_unhealthy_even_without_splunk_creds(
         _ok_connectivity(status=STATUS_FAIL, detail="Authentication failed."),
     )
     ok = preflight.run_pretest(plan, inventory, Credentials("u", "p"), "gw", 22, None)
+    assert ok is False
+
+
+def test_pretest_checks_rest_of_stretched_cluster_splunk_only(inventory, monkeypatch, capsys):
+    """Plan only touches shx01 (milano) - shx02 (roma) isn't in the plan, but captain
+    transfer/revert already needs to reach it too (whole cluster, both sites), splunk
+    identity only - not root."""
+    plan = _plan(inventory, {1: ("shx01",)})
+    calls = []
+    monkeypatch.setattr("auto_patchinator.preflight.check_connectivity", _recording_connectivity(calls))
+    monkeypatch.setattr("auto_patchinator.preflight._splunk_show", _fake_splunk_show({
+        ("shx01", "shcluster-status"): SHCLUSTER_STATUS_DYNAMIC,
+        ("shx01", "kvstore-status"): KVSTORE_STATUS_ALL_HEALTHY,
+    }))
+
+    ok = preflight.run_pretest(plan, inventory, Credentials("u", "p"), "gw", 22, CREDS)
+    assert ok is True
+
+    # plan-hosts splunk, plan-hosts root, extra-cluster splunk - in that order
+    assert len(calls) == 3
+    extra_hosts, extra_identities = calls[2]
+    assert extra_hosts == ["shx02"]
+    assert extra_identities == [Identity.SPLUNK]
+    assert "rest of the stretched SH cluster" in capsys.readouterr().out
+
+
+def test_pretest_skips_extra_cluster_check_when_no_stretched_host_in_plan(inventory, monkeypatch):
+    plan = _plan(inventory, {1: ("dp01",)})
+    calls = []
+    monkeypatch.setattr("auto_patchinator.preflight.check_connectivity", _recording_connectivity(calls))
+
+    ok = preflight.run_pretest(plan, inventory, Credentials("u", "p"), "gw", 22, None)
+    assert ok is True
+    assert len(calls) == 2  # just the plan-hosts splunk + root blocks
+    assert not any("shx02" in hosts for hosts, _identities in calls)
+
+
+def test_pretest_extra_cluster_check_skipped_when_plan_already_covers_whole_cluster(inventory, monkeypatch):
+    plan = _plan(inventory, {1: ("shx01", "shx02")})
+    calls = []
+    monkeypatch.setattr("auto_patchinator.preflight.check_connectivity", _recording_connectivity(calls))
+    monkeypatch.setattr("auto_patchinator.preflight._splunk_show", _fake_splunk_show({
+        ("shx01", "shcluster-status"): SHCLUSTER_STATUS_DYNAMIC,
+        ("shx01", "kvstore-status"): KVSTORE_STATUS_ALL_HEALTHY,
+    }))
+
+    ok = preflight.run_pretest(plan, inventory, Credentials("u", "p"), "gw", 22, CREDS)
+    assert ok is True
+    assert len(calls) == 2  # nothing "extra" left to check - plan already has both sites
+
+
+def test_pretest_extra_cluster_connectivity_failure_marks_pretest_unhealthy(inventory, monkeypatch):
+    plan = _plan(inventory, {1: ("shx01",)})
+
+    def fake(host_items, identities, credentials, gateway_host, gateway_port, inventory,
+              on_result=None, max_workers=1):
+        for hostname, _host in host_items:
+            for identity in identities:
+                status = STATUS_FAIL if hostname == "shx02" else STATUS_OK
+                if on_result:
+                    on_result(ConnectivityResult(hostname, identity, status, "detail"))
+
+    monkeypatch.setattr("auto_patchinator.preflight.check_connectivity", fake)
+    monkeypatch.setattr("auto_patchinator.preflight._splunk_show", _fake_splunk_show({
+        ("shx01", "shcluster-status"): SHCLUSTER_STATUS_DYNAMIC,
+        ("shx01", "kvstore-status"): KVSTORE_STATUS_ALL_HEALTHY,
+    }))
+
+    ok = preflight.run_pretest(plan, inventory, Credentials("u", "p"), "gw", 22, CREDS)
     assert ok is False

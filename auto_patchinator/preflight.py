@@ -13,6 +13,12 @@ being available:
      necessarily a real problem; still worth showing so the operator remembers to
      request it before the actual patching window if root-identity actions are
      needed.
+  2b. If this wave touches any search_head_stretched host, splunk-identity
+      connectivity to the *rest* of that cluster (both sites) too - not just this
+      wave's own site. Captain transfer/revert (still manual - see TODO.md) already
+      touches every member cluster-wide, so this matters even before that step is
+      automated. Only checks hosts not already covered by step 1; root isn't
+      needed here.
   3. If Splunk API credentials are configured (load_splunk_api_credentials() -
      optional; this tool works without them, same as everywhere else that consumes
      them) - for every distinct search-head role present in the plan (stretched and
@@ -105,6 +111,31 @@ def run_pretest(
     all_ok &= _run_connectivity_block(
         host_items, [Identity.ROOT], credentials, gateway_host, gateway_port, inventory, max_parallel_hosts
     )
+
+    # Captain transfer/revert (currently manual - see TODO.md's "Automate SH captain
+    # transfer / revert") already instructs the operator to run commands on "every
+    # other search head in the whole cluster (both sites)", not just this wave's own
+    # site - so if this wave touches search_head_stretched at all, splunk-identity
+    # reach to the *rest* of that cluster matters too, even before that step is
+    # automated. Root isn't needed for this - captain transfer only ever runs as
+    # splunk. Only the hosts this wave doesn't already cover are checked here, to
+    # avoid re-testing/duplicate output against the plan-hosts block above.
+    if any(inventory.get(h).role == NodeRole.SEARCH_HEAD_STRETCHED for h in hostnames):
+        extra_hosts = [h for h in inventory.stretched_sh_hostnames() if h not in hostnames]
+        if extra_hosts:
+            extra_items = [(h, inventory.get(h)) for h in extra_hosts]
+            print(
+                f"\n=== Pretest: connectivity, splunk identity, rest of the stretched SH "
+                f"cluster ({len(extra_items)} host(s) not in this wave) ==="
+            )
+            print(
+                "  (needed for captain transfer/revert, which touches the whole cluster - "
+                "both sites - not just this wave's own site)"
+            )
+            all_ok &= _run_connectivity_block(
+                extra_items, [Identity.SPLUNK], credentials, gateway_host, gateway_port,
+                inventory, max_parallel_hosts,
+            )
 
     print("\n=== Pretest: Splunk API checks (captain/election, KV store) ===")
     if splunk_api_credentials is None:

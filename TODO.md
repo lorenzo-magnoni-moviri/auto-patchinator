@@ -368,14 +368,23 @@ Open items, roughly in priority order.
   `STOPPING`/`STARTING` for a few seconds first. Credentials via
   `STREAMSETS_API_USER`/`STREAMSETS_API_PASSWORD` in `.env`
   (`executor/credentials.py:load_streamsets_api_credentials`) - forced manual when
-  unset, same pattern as CLUSTER_WAIT. `actions/sequences.py`'s `STREAMSETS_PIPELINES`
-  holds the 5 real pipeline (label, id) pairs (RDK, ODP, ODP PODS, RDKV, ATD),
-  replacing both the old `disable_streamsets_pipelines` and `enable_streamsets_pipelines`
-  manual_todo placeholders in `_prdmilbbspkfw02_sequences()`. Both directions verified
-  live end to end against all 5 real production pipelines (stop then restart all 5,
-  via the actual wired-in `RunController` code path) - all 10 actions succeeded;
-  real pipelines settled slower than the idle test pipeline (14-25s to stop, ~9.5s to
-  start) but well within the timeout. 90s timeout / 5s poll interval, per the operator.
+  unset, same pattern as CLUSTER_WAIT. The 5 real pipeline (label, id) pairs (RDK,
+  ODP, ODP PODS, RDKV, ATD) replace both the old `disable_streamsets_pipelines` and
+  `enable_streamsets_pipelines` manual_todo placeholders in `_prdmilbbspkfw02_sequences()`.
+  Both directions verified live end to end against all 5 real production pipelines
+  (stop then restart all 5, via the actual wired-in `RunController` code path) - all
+  10 actions succeeded; real pipelines settled slower than the idle test pipeline
+  (14-25s to stop, ~9.5s to start) but well within the timeout. 90s timeout / 5s poll
+  interval, per the operator.
+  - **2026-09-22, follow-up (operator feedback)**: the pipeline list was originally
+    hardcoded as `STREAMSETS_PIPELINES` in `actions/sequences.py` - moved to
+    `inventory/streamsets_pipelines.yaml` (same directory/pattern as `hosts.yaml`),
+    loaded by `config/streamsets_pipelines.py:load_streamsets_pipelines` and threaded
+    explicitly through `cli.py` → `build_run_plan` → `get_role_sequences` →
+    `_prdmilbbspkfw02_sequences(streamsets_pipelines)`, matching how credentials/
+    inventory are already threaded elsewhere rather than loaded lazily inside
+    `sequences.py` (which would also risk a circular import with
+    `config/inventory.py`). Editing the list no longer needs a code change/PR.
   **Still open**: the "scale ODP Preprocessing pipeline worker threads 5→8 before
   restart, revert after" detail from the original sketch (never confirmed with the
   operator, not built).

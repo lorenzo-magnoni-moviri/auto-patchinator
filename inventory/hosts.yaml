@@ -37,7 +37,8 @@ hosts:
     role: forwarder
     site: milano
     # Has a host-specific override sequence (StreamSets pipelines) - see
-    # auto_patchinator/actions/sequences.py HOST_OVERRIDES.
+    # auto_patchinator/actions/sequences.py HOST_OVERRIDES. The pipeline list itself
+    # lives in inventory/streamsets_pipelines.yaml, not here or in code.
   prdrmlbbspkfw01:
     role: forwarder
     site: roma

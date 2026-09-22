@@ -38,6 +38,7 @@ def build_run_plan(
     ordered_steps: list[OrderedStep],
     wave_mapping: dict[int, tuple[str, ...]],
     inventory: Inventory,
+    streamsets_pipelines: tuple[tuple[str, str], ...] = (),
 ) -> list[RunStepPlan]:
     plans: list[RunStepPlan] = []
     for ordered in ordered_steps:
@@ -51,7 +52,7 @@ def build_run_plan(
 
         for hostname in hostnames:
             host = inventory.get(hostname)
-            sequences = get_role_sequences(hostname, host.role)
+            sequences = get_role_sequences(hostname, host.role, streamsets_pipelines)
 
             if team_step.verb == ActionVerb.STOP:
                 per_host_actions[hostname] = sequences.stop_per_node

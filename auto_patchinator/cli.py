@@ -8,6 +8,7 @@ from pathlib import Path
 
 from auto_patchinator.actions.types import Identity
 from auto_patchinator.config.inventory import load_inventory
+from auto_patchinator.config.streamsets_pipelines import load_streamsets_pipelines
 from auto_patchinator.executor.connectivity import STATUS_FAIL, STATUS_OK, STATUS_SKIP, ConnectivityResult, check_connectivity
 from auto_patchinator.executor.credentials import (
     load_splunk_api_credentials,
@@ -237,7 +238,8 @@ def cmd_run(args: argparse.Namespace) -> None:
             f"WARNING: no hosts found in '{HOST_SHEET_NAME}' sheet that match the inventory — "
             "check that the Excel host sheet and hosts.yaml are consistent."
         )
-    run_plan = build_run_plan(ordered_steps, wave_mapping, inventory)
+    streamsets_pipelines = load_streamsets_pipelines()
+    run_plan = build_run_plan(ordered_steps, wave_mapping, inventory, streamsets_pipelines)
 
     gateway_host, gateway_port = _resolve_pas_gateway(inventory)
     # Just an env/`.env` read, never prompts - safe to resolve once, early, and reuse

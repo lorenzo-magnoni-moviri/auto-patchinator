@@ -529,13 +529,15 @@ be slow).
 1. `backup_crontab`
 2. `disable_crontab`
 3. `wait(180s)` — "allow in-flight cron jobs to finish before touching StreamSets"
-4. Five `STREAMSETS_PIPELINE` stop actions (RDK, ODP, ODP PODS, RDKV, ATD — see
-   `actions/sequences.py`'s `STREAMSETS_PIPELINES`), each `POST .../stop?rev=0` then
-   polling `.../status?rev=0` until `STOPPED` or a 90s timeout. Forced manual if
-   `STREAMSETS_API_USER`/`STREAMSETS_API_PASSWORD` aren't set in `.env`.
+4. One `STREAMSETS_PIPELINE` stop action per pipeline listed in
+   `inventory/streamsets_pipelines.yaml` (currently RDK, ODP, ODP PODS, RDKV, ATD -
+   edit that file to add/remove/rename pipelines, no code change needed), each
+   `POST .../stop?rev=0` then polling `.../status?rev=0` until `STOPPED` or a 90s
+   timeout. Forced manual if `STREAMSETS_API_USER`/`STREAMSETS_API_PASSWORD` aren't
+   set in `.env`.
 5. stop → disable boot-start
 
-Start half mirrors it: enable boot-start → daemon-reload → start, then the same five
+Start half mirrors it: enable boot-start → daemon-reload → start, then the same
 pipelines as `STREAMSETS_PIPELINE` **start** actions (`POST .../start?rev=0`, polled
 until `RUNNING`), then `enable_crontab`.
 

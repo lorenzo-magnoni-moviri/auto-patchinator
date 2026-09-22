@@ -303,19 +303,6 @@ def forwarder_sequences() -> RoleSequences:
 # Per-host overrides - keyed by hostname, take precedence over the role default.
 # ---------------------------------------------------------------------------
 
-# StreamSets Data Collector pipelines that must be stopped before patching
-# prdmilbbspkfw02 - (label, pipeline_id) pairs, supplied by the operator, 2026-09-22.
-# Labels are just for readable operator-facing output/action names; the API only
-# cares about the id. Restart is not yet automated (still enable_streamsets_pipelines
-# below) - see TODO.md.
-STREAMSETS_PIPELINES: tuple[tuple[str, str], ...] = (
-    ("RDK", "prdtelemeea573f6c-4e2d-41ef-932c-3dd47d4ac79c"),
-    ("ODP", "prdteleme7a70ca7a-7693-452a-bdee-e91d51711155"),
-    ("ODP PODS", "prdteleme074348da-c73d-4697-aefc-a2f4ba2fa209"),
-    ("RDKV", "prdteleme794bf608-4939-427b-a3b9-28f914d45f54"),
-    ("ATD", "prdteleme714360d7-2ec1-418f-a59f-9dd3246689ab"),
-)
-
 # poll interval: a real live stop settled to STOPPED in ~4.6s for an idle test
 # pipeline (2026-09-22) - 5s keeps polling cheap without being right on top of that.
 # timeout: operator-specified, generous margin over the observed settle time for a
@@ -363,18 +350,23 @@ def start_streamsets_pipeline(label: str, pipeline_id: str) -> Action:
     )
 
 
-def _prdmilbbspkfw02_sequences() -> RoleSequences:
+def _prdmilbbspkfw02_sequences(streamsets_pipelines: tuple[tuple[str, str], ...] = ()) -> RoleSequences:
+    """streamsets_pipelines: (label, pipeline_id) pairs - loaded from
+    inventory/streamsets_pipelines.yaml by cli.py and threaded through
+    build_run_plan/get_role_sequences, not hardcoded here. Defaults to empty only for
+    callers (mostly tests) that don't care about this host's StreamSets actions at
+    all; a real run always passes the real list."""
     return RoleSequences(
         stop_per_node=(
             backup_crontab(),
             disable_crontab(),
             wait(180, "Allow in-flight cron jobs to finish before touching StreamSets."),
-            *(stop_streamsets_pipeline(label, pid) for label, pid in STREAMSETS_PIPELINES),
+            *(stop_streamsets_pipeline(label, pid) for label, pid in streamsets_pipelines),
             *_default_stop(SPLUNK_BIN),
         ),
         start_per_node=(
             *_default_start(SPLUNK_BIN),
-            *(start_streamsets_pipeline(label, pid) for label, pid in STREAMSETS_PIPELINES),
+            *(start_streamsets_pipeline(label, pid) for label, pid in streamsets_pipelines),
             enable_crontab(),
         ),
     )
@@ -403,9 +395,11 @@ def splunk_bin_for(role: NodeRole) -> str:
     return SPLUNK_BIN_BY_ROLE[role]
 
 
-def get_role_sequences(hostname: str, role: NodeRole) -> RoleSequences:
+def get_role_sequences(
+    hostname: str, role: NodeRole, streamsets_pipelines: tuple[tuple[str, str], ...] = ()
+) -> RoleSequences:
     if hostname in HOST_OVERRIDES:
-        return HOST_OVERRIDES[hostname]()
+        return HOST_OVERRIDES[hostname](streamsets_pipelines)
     if role == NodeRole.SEARCH_HEAD_STRETCHED:
         return search_head_stretched_sequences()
     return ROLE_SEQUENCES[role]()

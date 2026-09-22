@@ -2,11 +2,18 @@ from auto_patchinator.actions.sequences import (
     HOST_OVERRIDES,
     SPLUNK_BIN,
     SPLUNK_BIN_INDEXER,
-    STREAMSETS_PIPELINES,
     NodeRole,
     get_role_sequences,
 )
 from auto_patchinator.actions.types import ActionKind, Identity
+
+# A small fixture registry standing in for inventory/streamsets_pipelines.yaml - these
+# tests exercise the sequence-building logic, not the real file/loader (see
+# tests/test_streamsets_pipelines_config.py for that).
+FIXTURE_STREAMSETS_PIPELINES = (
+    ("RDK", "pipeline-rdk-id"),
+    ("ODP", "pipeline-odp-id"),
+)
 
 
 def test_start_sequence_order_is_enable_reload_start():
@@ -73,19 +80,29 @@ def test_crontab_is_backed_up_before_deletion_everywhere():
 
 def test_host_override_replaces_role_sequence():
     hostname = next(iter(HOST_OVERRIDES))
-    seq = get_role_sequences(hostname, NodeRole.FORWARDER)
+    seq = get_role_sequences(hostname, NodeRole.FORWARDER, FIXTURE_STREAMSETS_PIPELINES)
     assert any(a.name.startswith("stop_streamsets_pipeline_") for a in seq.stop_per_node)
+
+
+def test_fw02_without_streamsets_pipelines_has_none_of_those_actions():
+    """The default (no streamsets_pipelines passed) is an empty registry, not a
+    crash - callers that don't care about this host's StreamSets actions (most
+    non-fw02-specific tests) are unaffected."""
+    hostname = next(iter(HOST_OVERRIDES))
+    seq = get_role_sequences(hostname, NodeRole.FORWARDER)
+    assert not any(a.kind == ActionKind.STREAMSETS_PIPELINE for a in seq.stop_per_node)
+    assert not any(a.kind == ActionKind.STREAMSETS_PIPELINE for a in seq.start_per_node)
 
 
 def test_fw02_stops_every_streamsets_pipeline_before_splunk_stop():
     hostname = next(iter(HOST_OVERRIDES))
-    seq = get_role_sequences(hostname, NodeRole.FORWARDER)
+    seq = get_role_sequences(hostname, NodeRole.FORWARDER, FIXTURE_STREAMSETS_PIPELINES)
     names = [a.name for a in seq.stop_per_node]
 
     pipeline_actions = [a for a in seq.stop_per_node if a.kind == ActionKind.STREAMSETS_PIPELINE]
-    assert len(pipeline_actions) == len(STREAMSETS_PIPELINES) == 5
+    assert len(pipeline_actions) == len(FIXTURE_STREAMSETS_PIPELINES)
 
-    for (label, pipeline_id), action in zip(STREAMSETS_PIPELINES, pipeline_actions):
+    for (label, pipeline_id), action in zip(FIXTURE_STREAMSETS_PIPELINES, pipeline_actions):
         assert action.pipeline_label == label
         assert action.pipeline_id == pipeline_id
         assert action.target_status == "STOPPED"
@@ -97,20 +114,15 @@ def test_fw02_stops_every_streamsets_pipeline_before_splunk_stop():
     assert max(names.index(a.name) for a in pipeline_actions) < names.index("stop_splunk")
 
 
-def test_fw02_pipeline_ids_are_unique():
-    ids = [pid for _, pid in STREAMSETS_PIPELINES]
-    assert len(ids) == len(set(ids))
-
-
 def test_fw02_starts_every_streamsets_pipeline_after_splunk_start():
     hostname = next(iter(HOST_OVERRIDES))
-    seq = get_role_sequences(hostname, NodeRole.FORWARDER)
+    seq = get_role_sequences(hostname, NodeRole.FORWARDER, FIXTURE_STREAMSETS_PIPELINES)
     names = [a.name for a in seq.start_per_node]
 
     pipeline_actions = [a for a in seq.start_per_node if a.kind == ActionKind.STREAMSETS_PIPELINE]
-    assert len(pipeline_actions) == len(STREAMSETS_PIPELINES) == 5
+    assert len(pipeline_actions) == len(FIXTURE_STREAMSETS_PIPELINES)
 
-    for (label, pipeline_id), action in zip(STREAMSETS_PIPELINES, pipeline_actions):
+    for (label, pipeline_id), action in zip(FIXTURE_STREAMSETS_PIPELINES, pipeline_actions):
         assert action.pipeline_label == label
         assert action.pipeline_id == pipeline_id
         assert action.target_status == "RUNNING"

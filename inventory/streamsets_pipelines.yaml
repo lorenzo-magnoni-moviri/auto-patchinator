@@ -1,0 +1,20 @@
+# StreamSets Data Collector pipelines that must be stopped before patching
+# prdmilbbspkfw02, and restarted afterward - see
+# auto_patchinator/actions/sequences.py's HOST_OVERRIDES / _prdmilbbspkfw02_sequences().
+# label is just for readable operator-facing output/action names (e.g.
+# "stop_streamsets_pipeline_rdk"); id is what the StreamSets Data Collector REST API
+# actually needs. Order here is the order they're stopped in (and started back up in).
+#
+# Supplied by the operator, 2026-09-22.
+
+pipelines:
+  - label: RDK
+    id: prdtelemeea573f6c-4e2d-41ef-932c-3dd47d4ac79c
+  - label: ODP
+    id: prdteleme7a70ca7a-7693-452a-bdee-e91d51711155
+  - label: ODP PODS
+    id: prdteleme074348da-c73d-4697-aefc-a2f4ba2fa209
+  - label: RDKV
+    id: prdteleme794bf608-4939-427b-a3b9-28f914d45f54
+  - label: ATD
+    id: prdteleme714360d7-2ec1-418f-a59f-9dd3246689ab

@@ -50,6 +50,14 @@ Open items, roughly in priority order.
   no progress indication at all. `RunController._heartbeat` (a context manager
   wrapping that branch of `_attempt_with_retry`) now prints a new `still running (Ns)`
   line every 30s while a concurrent-mode action is still in flight.
+- [x] **`clean_kvstore` confirmation asked once per run, not once per search head**
+  (2026-09-22, operator feedback). Automatic mode used to ask "Also clean the KV
+  store?" separately for every search head being started together (e.g. 3+ times for
+  a 3-node group) - no reason for that, the answer is always the same decision for
+  the whole run. `RunController._kvstore_clean_decision` (`None` until the first
+  `clean_kvstore` action is reached, then locked in) is now checked before asking -
+  the same `_console_lock`-held ask-if-needed pattern already used elsewhere also
+  means concurrent hosts (`--max-parallel-hosts` > 1) can't race to ask twice.
 - [x] Fixed: crontab was deleted with no backup taken first (see "Verify
   `backup_crontab`..." below for the remaining verification step).
 - [x] **Default inventory path** — `--inventory` now defaults to `inventory/hosts.yaml`

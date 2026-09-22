@@ -280,6 +280,11 @@ class RunController:
         self._locked_mode: str | None = "auto" if full_auto else None
         # None = not yet decided; asked once, the first time manual guide mode is used.
         self._show_explanations: bool | None = show_explanations
+        # None = not yet decided; asked once, the first time clean_kvstore is reached in
+        # automatic mode, then reused for every subsequent one this run - see
+        # _confirm_kvstore_clean_auto. No reason to ask the same question separately for
+        # every search head being started together.
+        self._kvstore_clean_decision: bool | None = None
         self._jump_target_index: int | None = None
         # >1 runs that many hosts' automatic-mode action lists concurrently (see the
         # module docstring); 1 (the default) is the original fully-sequential behavior.
@@ -828,25 +833,34 @@ class RunController:
         connections: "_HostConnections | None",
         animate: bool,
     ) -> str:
-        """Ask before this specific host's restart whether to actually clean its KV
-        store - safe to decline when the downtime before this restart was too short for
-        the local copy to have gone stale. Held under _console_lock for the same reason
-        as _confirm_manual_auto: only one host's prompt is ever on screen / reading
-        stdin at a time in a concurrent automatic run, though other hosts keep running
-        in the background. Blank input (or anything but n/no) keeps today's always-clean
+        """Ask whether to actually clean the KV store before this restart - safe to
+        decline when the downtime before this restart was too short for the local copy
+        to have gone stale. Asked only once per run (self._kvstore_clean_decision),
+        not once per search head - there's no reason to make the operator answer the
+        same question separately for every host being started together. Held under
+        _console_lock for the whole ask-if-needed-then-apply sequence: concurrent hosts
+        never race to ask twice (one blocks on input() while holding the lock, so any
+        other host arriving in the meantime just waits, then finds the decision already
+        made and applies it without prompting - same serialization _confirm_manual_auto
+        relies on). Blank input (or anything but n/no) keeps today's always-clean
         default."""
         with self._console_lock:
-            answer = input(
-                yellow(f"\n[{hostname}] Also clean the KV store before starting? [Y/n/q] ")
-            ).strip().lower()
-            _log.info("operator answered %r for clean_kvstore on %s", answer, hostname)
-            if answer == "q":
-                return "quit"
-            if answer in ("n", "no"):
+            if self._kvstore_clean_decision is None:
+                answer = input(
+                    yellow(
+                        f"\n[{hostname}] Also clean the KV store before starting? "
+                        "This applies to every search head started this run. [Y/n/q] "
+                    )
+                ).strip().lower()
+                _log.info("operator answered %r for clean_kvstore (applies for the rest of the run)", answer)
+                if answer == "q":
+                    return "quit"
+                self._kvstore_clean_decision = answer not in ("n", "no")
+            if not self._kvstore_clean_decision:
                 action_state.status = ActionStatus.SKIPPED
-                action_state.output = "operator declined KV store clean before restart"
+                action_state.output = "operator declined KV store clean for this run"
                 self._save()
-                print(yellow("    SKIPPED"))
+                print(yellow(f"[{hostname}] {_auto_label(action)} ... SKIPPED (declined for this run)"))
                 return "continue"
         return self._attempt_with_retry(
             scope, action, action_state, auto=True, connections=connections, animate=animate

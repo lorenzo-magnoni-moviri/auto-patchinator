@@ -14,7 +14,7 @@ from auto_patchinator.plan.dependency import resolve_order
 from auto_patchinator.plan.run_plan import build_run_plan
 from auto_patchinator.runner.controller import RunController
 from auto_patchinator.state import store
-from auto_patchinator.state.models import ActionStatus
+from auto_patchinator.state.models import ActionState, ActionStatus
 from tests.conftest import TEAM, make_raw
 
 
@@ -96,9 +96,10 @@ def test_automatic_mode_reuses_one_connection_per_host_per_identity(tmp_path, in
 
 def test_clean_kvstore_declined_in_automatic_mode_is_skipped_not_run(tmp_path, inventory, monkeypatch):
     """clean_kvstore is only meaningful on search_head_stretched. In automatic mode the
-    operator is asked per host, right before it runs, whether to actually clean it - 'n'
-    skips it (and never touches the connection) without blocking the rest of the host's
-    sequence (start_splunk still runs)."""
+    operator is asked once for the whole run, right before the first clean_kvstore is
+    reached, whether to actually clean it - 'n' skips it (and never touches the
+    connection) without blocking the rest of the host's sequence (start_splunk still
+    runs)."""
     plan = _start_step_plan(inventory, {1: ("shx01",)})
     state = store.build_initial_state("t", "p.xlsx", "s", plan)
     factory = RecordingConnectionFactory()
@@ -134,6 +135,62 @@ def test_clean_kvstore_confirmed_in_automatic_mode_runs_it(tmp_path, inventory, 
     assert action_states["clean_kvstore"].status == ActionStatus.SUCCESS
     ran_commands = [call[3] for call in factory.calls("run")]
     assert any("clean kvstore" in cmd for cmd in ran_commands)
+
+
+def test_clean_kvstore_decline_is_asked_once_and_reused_for_the_next_host(
+    tmp_path, inventory, monkeypatch
+):
+    """Calls _confirm_kvstore_clean_auto directly for two different hosts (bypassing
+    plan/role resolution entirely - shx02, the only other search_head_stretched host
+    in the shared fixture, is deliberately manual-identity-only and so isn't suitable
+    for exercising this path through a full plan). The input feed has exactly ONE
+    answer - a second host asking again would raise StopIteration and fail the test."""
+    plan = _start_step_plan(inventory, {1: ("shx01",)})
+    state = store.build_initial_state("t", "p.xlsx", "s", plan)
+    factory = RecordingConnectionFactory()
+    feed = iter(["n"])
+    monkeypatch.setattr("builtins.input", lambda *_: next(feed))
+    ctrl = RunController(plan, state, str(tmp_path), factory, inventory)
+    ctrl._save = lambda: None
+    action = next(a for a in plan[0].per_host_actions["shx01"] if a.name == "clean_kvstore")
+
+    # scope must be a real inventory host (used for the connection lookup); hostname
+    # is only ever used for the prompt/print text, so "host-a"/"host-b" stand in for
+    # two distinct search heads while both share the one real fixture host as scope.
+    state1 = ActionState(name="clean_kvstore")
+    outcome1 = ctrl._confirm_kvstore_clean_auto("host-a", "shx01", action, state1, None, True)
+    assert outcome1 == "continue"
+    assert state1.status == ActionStatus.SKIPPED
+
+    state2 = ActionState(name="clean_kvstore")
+    outcome2 = ctrl._confirm_kvstore_clean_auto("host-b", "shx01", action, state2, None, True)
+    assert outcome2 == "continue"
+    assert state2.status == ActionStatus.SKIPPED  # same decision reused, no second prompt
+
+
+def test_clean_kvstore_confirm_is_asked_once_and_reused_for_the_next_host(
+    tmp_path, inventory, monkeypatch
+):
+    """Same mechanism as above, confirming (blank input) instead - both hosts actually
+    run clean_kvstore, from a single prompt."""
+    plan = _start_step_plan(inventory, {1: ("shx01",)})
+    state = store.build_initial_state("t", "p.xlsx", "s", plan)
+    factory = RecordingConnectionFactory()
+    feed = iter([""])
+    monkeypatch.setattr("builtins.input", lambda *_: next(feed))
+    ctrl = RunController(plan, state, str(tmp_path), factory, inventory)
+    ctrl._save = lambda: None
+    action = next(a for a in plan[0].per_host_actions["shx01"] if a.name == "clean_kvstore")
+
+    state1 = ActionState(name="clean_kvstore")
+    ctrl._confirm_kvstore_clean_auto("host-a", "shx01", action, state1, None, True)
+    assert state1.status == ActionStatus.SUCCESS
+
+    state2 = ActionState(name="clean_kvstore")
+    ctrl._confirm_kvstore_clean_auto("host-b", "shx01", action, state2, None, True)
+    assert state2.status == ActionStatus.SUCCESS  # same decision reused, no second prompt
+    ran_commands = [call[3] for call in factory.calls("run")]
+    assert sum("clean kvstore" in cmd for cmd in ran_commands) == 2
 
 
 def test_automatic_mode_sequential_by_default_still_completes_all_hosts(tmp_path, inventory, monkeypatch):

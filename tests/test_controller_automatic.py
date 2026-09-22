@@ -5,6 +5,7 @@ lock, since these tests deliberately run hosts concurrently) and returns scripte
 results, so behavior is asserted precisely instead of just "the run finished".
 """
 import threading
+import time
 
 from auto_patchinator.actions.types import Identity
 from auto_patchinator.executor.ssh import CommandResult
@@ -244,3 +245,26 @@ def test_quit_stops_a_host_before_its_next_action_but_never_mid_action(tmp_path,
     statuses = [a.status for _, _, a in items]
     assert statuses[0] == ActionStatus.SUCCESS   # in flight when quit fired - always finishes
     assert all(s == ActionStatus.PENDING for s in statuses[1:])  # never started
+
+
+def test_heartbeat_prints_still_running_lines_while_a_slow_action_is_in_flight(
+    tmp_path, inventory, monkeypatch, capsys
+):
+    """Concurrent automatic mode (animate=False) used to be completely silent from a
+    slow action's '...' line until it finished - indistinguishable from a hang (found
+    live, 2026-09-22: a search-head-cluster captain's stop_splunk took ~4m45s with zero
+    output in between, prompting a risky manual intervention on the real host). _heartbeat
+    now prints a new 'still running (Ns)' line every `interval` seconds for exactly this
+    case - verified directly here with a short interval rather than waiting out the real
+    default (30s)."""
+    plan = _start_step_plan(inventory, {1: ("dp01",)})
+    state = store.build_initial_state("t", "p.xlsx", "s", plan)
+    ctrl = RunController(plan, state, str(tmp_path), RecordingConnectionFactory(), inventory)
+
+    with ctrl._heartbeat("[dp01] doing a slow thing", interval=0.05):
+        time.sleep(0.17)  # long enough for 2-3 ticks at a 0.05s interval
+
+    out = capsys.readouterr().out
+    lines = [line for line in out.splitlines() if "still running" in line]
+    assert len(lines) >= 2, out
+    assert all(line.startswith("[dp01] doing a slow thing still running (") for line in lines)

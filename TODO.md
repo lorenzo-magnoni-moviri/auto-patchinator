@@ -24,6 +24,32 @@ Open items, roughly in priority order.
   re-prompting; automatic mode shows an animated "..." while an action runs.
 - [x] Full DEBUG audit logging to `logs/run-<id>.log` (SSH send/receive, operator
   choices, passwords redacted).
+- [x] **Fixed: `run_plain_with_secret` leaked the Splunk admin password into
+  `logs/run-*.log` in cleartext** (found live, 2026-09-22, mid real wave-9 run — the
+  password showed up ~194 times across the run log and both pretest logs from that
+  session). Root cause: `send(..., sensitive=True)` redacted the *outbound* line, but a
+  PTY locally echoes back whatever was just typed before the shell even processes it,
+  and the `read_until()` immediately following that send logged that raw echoed buffer
+  unconditionally - the redaction never covered the read side. Fixed by adding a
+  `sensitive` flag to `read_until()` too, threaded through `run_plain_with_secret`'s
+  read and (defensively, though not observed to actually leak - real password prompts
+  suppress local echo) the `su`/`sudo` password read in `connect()`. Any log file
+  written before this fix (this environment's `logs/run-Vulnerability_Plan_Wave9_*.log`
+  and `logs/run-pretest-*.log` from 2026-09-21/22) still has the real password in
+  cleartext on disk - rotate the Splunk admin credential and treat those specific files
+  as sensitive until scrubbed/removed. Code fix only protects *future* runs - it can't
+  retroactively fix a process already running with the old code loaded in memory.
+- [x] **Fixed: a slow action in concurrent automatic mode (`--max-parallel-hosts` > 1)
+  printed nothing at all between its `...` line and its result** (found live,
+  2026-09-22, same session as above - a search-head-cluster captain's `stop_splunk`
+  took ~4m45s vs ~30s for its non-captain peers, with total silence in between,
+  indistinguishable from a hang; prompted a risky manual `splunk stop` on the real
+  host from a separate session). The in-place animated-dots spinner only works
+  single-threaded (it assumes it owns the terminal's last line), so it's deliberately
+  off whenever more than one host may be printing at once - which left that path with
+  no progress indication at all. `RunController._heartbeat` (a context manager
+  wrapping that branch of `_attempt_with_retry`) now prints a new `still running (Ns)`
+  line every 30s while a concurrent-mode action is still in flight.
 - [x] Fixed: crontab was deleted with no backup taken first (see "Verify
   `backup_crontab`..." below for the remaining verification step).
 - [x] **Default inventory path** — `--inventory` now defaults to `inventory/hosts.yaml`

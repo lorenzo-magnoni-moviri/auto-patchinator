@@ -74,16 +74,19 @@ def test_password_expired_pattern_does_not_match_normal_shell_prompt():
 
 
 class _FakeSession:
-    """Records every send() call (and whether it was marked sensitive), and always
-    responds as if the command completed successfully."""
+    """Records every send() call (and whether it was marked sensitive) and every
+    read_until() call's sensitive flag, and always responds as if the command
+    completed successfully."""
 
     def __init__(self):
         self.sends: list[tuple[str, bool]] = []
+        self.reads: list[bool] = []
 
     def send(self, text, sensitive=False):
         self.sends.append((text, sensitive))
 
-    def read_until(self, pattern, timeout=30):
+    def read_until(self, pattern, timeout=30, sensitive=False):
+        self.reads.append(sensitive)
         return f"...\r\nAP_EXIT_CODE:0\r\n{PROMPT_MARKER}"
 
 
@@ -98,6 +101,20 @@ def test_run_plain_with_secret_never_sends_the_secret_in_the_command_itself():
     secret_sends = [text for text, sensitive in fake_session.sends if sensitive]
     assert len(secret_sends) == 1
     assert "hunter2" in secret_sends[0]  # the ONE sensitive send carries the real secret
+
+
+def test_run_plain_with_secret_also_redacts_the_ptys_echo_of_the_secret():
+    """The send is redacted, but a PTY locally echoes back whatever was just sent -
+    the read_until() immediately following the sensitive send must be marked
+    sensitive too, or the echoed secret leaks into the log via the read side instead
+    (found live, 2026-09-22 - see TODO.md)."""
+    conn = SSHConnection("host01", Identity.SPLUNK, NodeRole.DEPLOYER, Credentials("u", "p"))
+    fake_session = _FakeSession()
+    conn._session = fake_session
+
+    conn.run_plain_with_secret('splunk show shcluster-status -u "admin:$AP_SECRET"', "hunter2")
+
+    assert fake_session.reads[0] is True  # the read right after the sensitive send
 
     non_sensitive_sends = [text for text, sensitive in fake_session.sends if not sensitive]
     assert all("hunter2" not in text for text in non_sensitive_sends)  # never in a logged send

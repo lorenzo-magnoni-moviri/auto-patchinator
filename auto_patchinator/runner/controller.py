@@ -45,6 +45,7 @@ see _run_automatic):
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import threading
@@ -100,6 +101,11 @@ _AUTO_LABELS = {
 }
 
 _AUTO_LABEL_WIDTH = 50  # pad so the DONE/FAILED column lines up
+
+# How often _heartbeat prints a "still running" line for a long action when the
+# animated in-place spinner is unavailable (concurrent automatic mode - see
+# _run_host_block_auto's `animate` flag and _heartbeat's own docstring).
+_HEARTBEAT_INTERVAL_SECONDS = 30.0
 
 # Automatic-mode-only: actions the operator is asked about per host, right before they
 # run, instead of always running unattended - see _confirm_kvstore_clean_auto. Task-by-
@@ -835,6 +841,35 @@ class RunController:
     # Shared execution + failure retry menu
     # ------------------------------------------------------------------
 
+    @contextlib.contextmanager
+    def _heartbeat(self, prefix: str, interval: float = _HEARTBEAT_INTERVAL_SECONDS):
+        """Prints a new 'still running (Ns)' line every `interval` seconds while the
+        wrapped block runs. Unlike term.py's animated dots (an in-place \\r redraw that
+        assumes it owns the terminal's last line), this always prints a complete new
+        line, so it's safe when multiple hosts' automatic-mode actions may be printing
+        concurrently (--max-parallel-hosts > 1, where the animated dots are disabled -
+        see _run_host_block_auto's `animate` flag). Without this, a slow action in
+        concurrent mode was completely silent from the moment its '...' line printed
+        until it finished - indistinguishable from a genuine hang (found live, 2026-09-
+        22: a search-head-cluster captain's stop_splunk took ~4m45s vs ~30s for its
+        non-captain peers, with zero output in between - see TODO.md)."""
+        started = time.monotonic()
+        stop = threading.Event()
+
+        def _tick() -> None:
+            while not stop.wait(interval):
+                elapsed = int(time.monotonic() - started)
+                with self._console_lock:
+                    print(f"{prefix} still running ({elapsed}s)")
+
+        thread = threading.Thread(target=_tick, daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join()
+
     def _attempt_with_retry(
         self,
         scope: str,
@@ -857,7 +892,8 @@ class RunController:
                 else:
                     with self._console_lock:
                         print(f"{prefix} ...")
-                    self._execute(scope, action, action_state, quiet=True, connections=connections)
+                    with self._heartbeat(prefix):
+                        self._execute(scope, action, action_state, quiet=True, connections=connections)
             else:
                 self._execute(scope, action, action_state, quiet=False, connections=connections)
             elapsed = time.monotonic() - started

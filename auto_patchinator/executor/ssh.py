@@ -110,7 +110,14 @@ class _ShellSession:
         _log.debug("%s >> %s", self._label, "<redacted>" if sensitive else text)
         self._channel.send(text + "\n")
 
-    def read_until(self, pattern: re.Pattern[str] | str, timeout: float = 30) -> str:
+    def read_until(
+        self, pattern: re.Pattern[str] | str, timeout: float = 30, sensitive: bool = False
+    ) -> str:
+        """sensitive=True redacts the read-back in logs too, not just the send - a PTY
+        locally echoes back whatever was just sent before the shell even processes it,
+        so the read immediately following a sensitive send (e.g. run_plain_with_secret's
+        `AP_SECRET=...` assignment) contains the same secret in cleartext and must be
+        redacted here as well, on both the success and the timeout/exception paths."""
         deadline = time.monotonic() + timeout
         matcher = pattern if isinstance(pattern, re.Pattern) else re.compile(re.escape(pattern))
         while time.monotonic() < deadline:
@@ -118,15 +125,16 @@ class _ShellSession:
                 self._buffer += self._channel.recv(4096).decode(errors="replace")
                 if matcher.search(self._buffer):
                     consumed, self._buffer = self._buffer, ""
-                    _log.debug("%s << %r", self._label, consumed)
+                    _log.debug("%s << %s", self._label, "<redacted>" if sensitive else repr(consumed))
                     return consumed
             else:
                 time.sleep(0.1)
+        buffer_repr = "<redacted>" if sensitive else repr(self._buffer)
         _log.warning(
-            "%s timed out after %ss waiting for %r; buffer so far: %r",
-            self._label, timeout, pattern, self._buffer,
+            "%s timed out after %ss waiting for %r; buffer so far: %s",
+            self._label, timeout, pattern, buffer_repr,
         )
-        raise TimeoutReadingShell(f"timed out waiting for {pattern!r}; buffer so far: {self._buffer!r}")
+        raise TimeoutReadingShell(f"timed out waiting for {pattern!r}; buffer so far: {buffer_repr}")
 
 
 def _paramiko_connect(client, target: str, port: int, username: str, password: str) -> None:
@@ -258,7 +266,11 @@ class SSHConnection:
             )
             if PASSWORD_PROMPT_PATTERN.search(marker_or_password):
                 session.send(self._credentials.password, sensitive=True)
-                session.read_until(re.compile(r"[#$>]\s*$"), timeout=15)
+                # A real su/sudo password prompt suppresses local echo for that one line
+                # (same as at a real terminal), so this hasn't been observed to actually
+                # leak - but sensitive=True here too, defensively, in case some su
+                # variant or the PAS gateway's shell ever doesn't suppress it.
+                session.read_until(re.compile(r"[#$>]\s*$"), timeout=15, sensitive=True)
 
             session.send(f"PS1='{PROMPT_MARKER}'")
             session.read_until(PROMPT_MARKER, timeout=15)
@@ -290,7 +302,7 @@ class SSHConnection:
         log" invariant, which this preserves for this second credential too."""
         session = self._require_session()
         session.send(f"AP_SECRET={shlex.quote(secret)}", sensitive=True)
-        session.read_until(PROMPT_MARKER, timeout=15)
+        session.read_until(PROMPT_MARKER, timeout=15, sensitive=True)
         return self.run_plain(command, timeout=timeout)
 
     def run_interactive(self, script: tuple[ExpectStep, ...], timeout: float = 60) -> CommandResult:

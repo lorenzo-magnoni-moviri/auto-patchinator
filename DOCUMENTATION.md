@@ -529,11 +529,15 @@ be slow).
 1. `backup_crontab`
 2. `disable_crontab`
 3. `wait(180s)` — "allow in-flight cron jobs to finish before touching StreamSets"
-4. `manual_todo: disable_streamsets_pipelines` — placeholder, exact command not yet known
+4. Five `STREAMSETS_PIPELINE` stop actions (RDK, ODP, ODP PODS, RDKV, ATD — see
+   `actions/sequences.py`'s `STREAMSETS_PIPELINES`), each `POST .../stop?rev=0` then
+   polling `.../status?rev=0` until `STOPPED` or a 90s timeout. Forced manual if
+   `STREAMSETS_API_USER`/`STREAMSETS_API_PASSWORD` aren't set in `.env`.
 5. stop → disable boot-start
 
-Start half mirrors it, ending with `manual_todo: enable_streamsets_pipelines` then
-`enable_crontab`.
+Start half mirrors it: enable boot-start → daemon-reload → start, then the same five
+pipelines as `STREAMSETS_PIPELINE` **start** actions (`POST .../start?rev=0`, polled
+until `RUNNING`), then `enable_crontab`.
 
 ### Captain transfer (stretched search-head cluster)
 
@@ -890,8 +894,9 @@ check `TODO.md` for anything more recent, since this list will drift.
   `connect()`/`su` code path just verified for root, this is low-risk, but hasn't been
   independently confirmed.
 
-- **StreamSets pipeline stop/start on `prdmilbbspkfw02`** is still a `manual_todo`
-  placeholder — the exact CLI/API commands aren't known yet.
+- **StreamSets pipeline stop and start on `prdmilbbspkfw02`** are both automated
+  (`STREAMSETS_PIPELINE` actions, stop verified live 2026-09-22 - see
+  [§13](#13-known-issues-and-operational-findings) and TODO.md).
 
 - **`send_mail`** is a manual placeholder appended to every single Excel step. Not yet
   automated (see [§16](#16-roadmap)).
@@ -988,8 +993,8 @@ recent than this document. In summary, the main open threads are:
    root-identity testing/use.
 2. **Complete one full, unattended live wave against test** end to end.
 3. **Automate what's currently manual**, in roughly this order of value: `send_mail`
-   (SMTP), StreamSets stop/start on the fw02 override, then (bigger lift, needs the
-   already-scaffolded Splunk API credentials) captain transfer/revert and
-   cluster-health polling after restarts.
+   (SMTP), then (bigger lift, needs the already-scaffolded Splunk API credentials)
+   captain transfer/revert. StreamSets stop/start on the fw02 override is already
+   automated.
 4. **Nice-to-have infrastructure**: containerizing the app, recording the target
    `--environment` in the report header, parallelizing per-host actions within a group.

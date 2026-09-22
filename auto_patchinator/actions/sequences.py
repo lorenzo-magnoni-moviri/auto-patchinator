@@ -303,18 +303,78 @@ def forwarder_sequences() -> RoleSequences:
 # Per-host overrides - keyed by hostname, take precedence over the role default.
 # ---------------------------------------------------------------------------
 
+# StreamSets Data Collector pipelines that must be stopped before patching
+# prdmilbbspkfw02 - (label, pipeline_id) pairs, supplied by the operator, 2026-09-22.
+# Labels are just for readable operator-facing output/action names; the API only
+# cares about the id. Restart is not yet automated (still enable_streamsets_pipelines
+# below) - see TODO.md.
+STREAMSETS_PIPELINES: tuple[tuple[str, str], ...] = (
+    ("RDK", "prdtelemeea573f6c-4e2d-41ef-932c-3dd47d4ac79c"),
+    ("ODP", "prdteleme7a70ca7a-7693-452a-bdee-e91d51711155"),
+    ("ODP PODS", "prdteleme074348da-c73d-4697-aefc-a2f4ba2fa209"),
+    ("RDKV", "prdteleme794bf608-4939-427b-a3b9-28f914d45f54"),
+    ("ATD", "prdteleme714360d7-2ec1-418f-a59f-9dd3246689ab"),
+)
+
+# poll interval: a real live stop settled to STOPPED in ~4.6s for an idle test
+# pipeline (2026-09-22) - 5s keeps polling cheap without being right on top of that.
+# timeout: operator-specified, generous margin over the observed settle time for a
+# real pipeline under load.
+_STREAMSETS_POLL_INTERVAL_SECONDS = 5
+_STREAMSETS_TIMEOUT_SECONDS = 90
+
+
+def stop_streamsets_pipeline(label: str, pipeline_id: str) -> Action:
+    """Stop one StreamSets pipeline via the Data Collector REST API and poll until it
+    actually reaches STOPPED (the stop call itself only signals the transition - see
+    executor/streamsets_api.py). Runs as splunk - the API is reached over localhost,
+    no elevated OS privilege needed, matching the rest of this host's sequence."""
+    slug = label.lower().replace(" ", "_")
+    return Action(
+        name=f"stop_streamsets_pipeline_{slug}",
+        kind=ActionKind.STREAMSETS_PIPELINE,
+        identity=Identity.SPLUNK,
+        pipeline_id=pipeline_id,
+        pipeline_label=label,
+        target_status="STOPPED",
+        poll_interval_seconds=_STREAMSETS_POLL_INTERVAL_SECONDS,
+        timeout_seconds=_STREAMSETS_TIMEOUT_SECONDS,
+        note=f"Stop the {label} StreamSets pipeline via the Data Collector REST API "
+             "and confirm it reaches STOPPED.",
+    )
+
+
+def start_streamsets_pipeline(label: str, pipeline_id: str) -> Action:
+    """Start one StreamSets pipeline via the Data Collector REST API and poll until it
+    actually reaches RUNNING - mirrors stop_streamsets_pipeline (same async-transition
+    reasoning: the start call itself only signals STARTING, it doesn't wait for it)."""
+    slug = label.lower().replace(" ", "_")
+    return Action(
+        name=f"start_streamsets_pipeline_{slug}",
+        kind=ActionKind.STREAMSETS_PIPELINE,
+        identity=Identity.SPLUNK,
+        pipeline_id=pipeline_id,
+        pipeline_label=label,
+        target_status="RUNNING",
+        poll_interval_seconds=_STREAMSETS_POLL_INTERVAL_SECONDS,
+        timeout_seconds=_STREAMSETS_TIMEOUT_SECONDS,
+        note=f"Start the {label} StreamSets pipeline via the Data Collector REST API "
+             "and confirm it reaches RUNNING.",
+    )
+
+
 def _prdmilbbspkfw02_sequences() -> RoleSequences:
     return RoleSequences(
         stop_per_node=(
             backup_crontab(),
             disable_crontab(),
             wait(180, "Allow in-flight cron jobs to finish before touching StreamSets."),
-            manual_todo("disable_streamsets_pipelines", "Disable the StreamSets pipelines on this node."),
+            *(stop_streamsets_pipeline(label, pid) for label, pid in STREAMSETS_PIPELINES),
             *_default_stop(SPLUNK_BIN),
         ),
         start_per_node=(
             *_default_start(SPLUNK_BIN),
-            manual_todo("enable_streamsets_pipelines", "Re-enable the StreamSets pipelines on this node."),
+            *(start_streamsets_pipeline(label, pid) for label, pid in STREAMSETS_PIPELINES),
             enable_crontab(),
         ),
     )

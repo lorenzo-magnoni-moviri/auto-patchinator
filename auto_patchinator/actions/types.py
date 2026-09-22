@@ -20,6 +20,7 @@ class ActionKind(str, Enum):
     MANUAL = "manual"
     WAIT = "wait"
     CLUSTER_WAIT = "cluster_wait"  # poll a Splunk cluster health condition until met or timeout
+    STREAMSETS_PIPELINE = "streamsets_pipeline"  # POST start/stop, then poll status until target or timeout
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,9 @@ class Action:
     poll_interval_seconds: int | None = None
     note: str | None = None
     timeout_seconds: int = DEFAULT_COMMAND_TIMEOUT
+    pipeline_id: str | None = None
+    pipeline_label: str | None = None
+    target_status: str | None = None
 
     def __post_init__(self) -> None:
         if self.kind == ActionKind.PLAIN and not self.command:
@@ -56,5 +60,15 @@ class Action:
             raise ValueError(f"action {self.name!r}: WAIT action requires wait_seconds")
         if self.kind == ActionKind.CLUSTER_WAIT and self.poll_interval_seconds is None:
             raise ValueError(f"action {self.name!r}: CLUSTER_WAIT action requires poll_interval_seconds")
-        if self.kind in (ActionKind.PLAIN, ActionKind.INTERACTIVE, ActionKind.CLUSTER_WAIT) and self.identity is None:
+        if self.kind == ActionKind.STREAMSETS_PIPELINE and (
+            not self.pipeline_id or not self.target_status or self.poll_interval_seconds is None
+        ):
+            raise ValueError(
+                f"action {self.name!r}: STREAMSETS_PIPELINE action requires pipeline_id, "
+                "target_status, and poll_interval_seconds"
+            )
+        if (
+            self.kind in (ActionKind.PLAIN, ActionKind.INTERACTIVE, ActionKind.CLUSTER_WAIT, ActionKind.STREAMSETS_PIPELINE)
+            and self.identity is None
+        ):
             raise ValueError(f"action {self.name!r}: {self.kind.value} action requires an identity")

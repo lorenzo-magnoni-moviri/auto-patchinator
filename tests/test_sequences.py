@@ -2,6 +2,7 @@ from auto_patchinator.actions.sequences import (
     HOST_OVERRIDES,
     SPLUNK_BIN,
     SPLUNK_BIN_INDEXER,
+    STREAMSETS_PIPELINES,
     NodeRole,
     get_role_sequences,
 )
@@ -73,7 +74,53 @@ def test_crontab_is_backed_up_before_deletion_everywhere():
 def test_host_override_replaces_role_sequence():
     hostname = next(iter(HOST_OVERRIDES))
     seq = get_role_sequences(hostname, NodeRole.FORWARDER)
-    assert any(a.name == "disable_streamsets_pipelines" for a in seq.stop_per_node)
+    assert any(a.name.startswith("stop_streamsets_pipeline_") for a in seq.stop_per_node)
+
+
+def test_fw02_stops_every_streamsets_pipeline_before_splunk_stop():
+    hostname = next(iter(HOST_OVERRIDES))
+    seq = get_role_sequences(hostname, NodeRole.FORWARDER)
+    names = [a.name for a in seq.stop_per_node]
+
+    pipeline_actions = [a for a in seq.stop_per_node if a.kind == ActionKind.STREAMSETS_PIPELINE]
+    assert len(pipeline_actions) == len(STREAMSETS_PIPELINES) == 5
+
+    for (label, pipeline_id), action in zip(STREAMSETS_PIPELINES, pipeline_actions):
+        assert action.pipeline_label == label
+        assert action.pipeline_id == pipeline_id
+        assert action.target_status == "STOPPED"
+        assert action.identity == Identity.SPLUNK
+        assert action.poll_interval_seconds is not None
+        assert action.timeout_seconds == 90
+
+    # every pipeline must be stopped before splunk itself stops
+    assert max(names.index(a.name) for a in pipeline_actions) < names.index("stop_splunk")
+
+
+def test_fw02_pipeline_ids_are_unique():
+    ids = [pid for _, pid in STREAMSETS_PIPELINES]
+    assert len(ids) == len(set(ids))
+
+
+def test_fw02_starts_every_streamsets_pipeline_after_splunk_start():
+    hostname = next(iter(HOST_OVERRIDES))
+    seq = get_role_sequences(hostname, NodeRole.FORWARDER)
+    names = [a.name for a in seq.start_per_node]
+
+    pipeline_actions = [a for a in seq.start_per_node if a.kind == ActionKind.STREAMSETS_PIPELINE]
+    assert len(pipeline_actions) == len(STREAMSETS_PIPELINES) == 5
+
+    for (label, pipeline_id), action in zip(STREAMSETS_PIPELINES, pipeline_actions):
+        assert action.pipeline_label == label
+        assert action.pipeline_id == pipeline_id
+        assert action.target_status == "RUNNING"
+        assert action.identity == Identity.SPLUNK
+        assert action.poll_interval_seconds is not None
+        assert action.timeout_seconds == 90
+
+    # every pipeline must be started after splunk itself starts
+    assert min(names.index(a.name) for a in pipeline_actions) > names.index("start_splunk")
+    assert "enable_streamsets_pipelines" not in names  # the old manual placeholder is gone
 
 
 def test_timeouts_60s_default_900s_for_splunk_stop_start():

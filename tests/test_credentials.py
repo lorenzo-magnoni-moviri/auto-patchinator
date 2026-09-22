@@ -1,4 +1,9 @@
-from auto_patchinator.executor.credentials import SplunkApiCredentials, load_splunk_api_credentials
+from auto_patchinator.executor.credentials import (
+    SplunkApiCredentials,
+    StreamSetsApiCredentials,
+    load_splunk_api_credentials,
+    load_streamsets_api_credentials,
+)
 
 
 def _clear_env(monkeypatch):
@@ -6,7 +11,10 @@ def _clear_env(monkeypatch):
     # (dotenv fills in anything not already set) - stubbed out so these tests are
     # isolated from whatever secrets the developer's local .env actually has.
     monkeypatch.setattr("auto_patchinator.executor.credentials._load_dotenv", lambda: None)
-    for var in ("SPLUNK_API_TOKEN", "SPLUNK_API_USER", "SPLUNK_API_PASSWORD"):
+    for var in (
+        "SPLUNK_API_TOKEN", "SPLUNK_API_USER", "SPLUNK_API_PASSWORD",
+        "STREAMSETS_API_USER", "STREAMSETS_API_PASSWORD",
+    ):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -44,5 +52,34 @@ def test_repr_never_leaks_secrets():
     creds = SplunkApiCredentials(token="supersecret", username="admin", password="hunter2")
     rendered = repr(creds)
     assert "supersecret" not in rendered
+    assert "hunter2" not in rendered
+    assert "admin" in rendered
+
+
+def test_streamsets_returns_none_when_nothing_configured(monkeypatch):
+    _clear_env(monkeypatch)
+    assert load_streamsets_api_credentials() is None
+
+
+def test_streamsets_username_without_password_is_not_configured(monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("STREAMSETS_API_USER", "admin")
+    assert load_streamsets_api_credentials() is None
+
+
+def test_streamsets_username_and_password_together_are_configured(monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("STREAMSETS_API_USER", "admin")
+    monkeypatch.setenv("STREAMSETS_API_PASSWORD", "secret")
+    creds = load_streamsets_api_credentials()
+    assert creds is not None
+    assert creds.username == "admin"
+    assert creds.password == "secret"
+    assert creds.configured
+
+
+def test_streamsets_repr_never_leaks_secrets():
+    creds = StreamSetsApiCredentials(username="admin", password="hunter2")
+    rendered = repr(creds)
     assert "hunter2" not in rendered
     assert "admin" in rendered

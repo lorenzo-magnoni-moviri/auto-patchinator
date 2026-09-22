@@ -350,16 +350,27 @@ Open items, roughly in priority order.
 
 ## Short-term improvements
 
-- [ ] **Automate StreamSets stop/start for `prdmilbbspkfw02`** — replace the current
-  `manual_todo` placeholders in `actions/sequences.py → _prdmilbbspkfw02_sequences()`
-  with StreamSets REST API calls:
-  - Stop all pipelines before the Splunk stop sequence.
-  - After the Splunk start sequence, poll the StreamSets API until all pipelines report
-    `RUNNING` and metrics confirm data is flowing again.
-  - Temporarily scale the ODP Preprocessing pipeline worker threads from 5 → 8 before
-    restart (to absorb the backlog) and revert to 5 once throughput normalises.
-  StreamSets API base URL and credentials should come from `.env` (a separate var, not
-  the Splunk API credentials above).
+- [x] **Automate StreamSets stop/start for `prdmilbbspkfw02`** (2026-09-22, both
+  halves). New `ActionKind.STREAMSETS_PIPELINE` (`actions/types.py`) +
+  `executor/streamsets_api.py` (command building, status extraction, HTTP-status
+  check) + `RunController._execute_streamsets_pipeline` (`runner/controller.py`) -
+  POST `.../{stop,start}?rev=0`, then poll `.../status?rev=0` until the pipeline
+  actually reaches the target status (`STOPPED`/`RUNNING`) - the stop/start call
+  itself only signals the transition, a real live test showed it stays
+  `STOPPING`/`STARTING` for a few seconds first. Credentials via
+  `STREAMSETS_API_USER`/`STREAMSETS_API_PASSWORD` in `.env`
+  (`executor/credentials.py:load_streamsets_api_credentials`) - forced manual when
+  unset, same pattern as CLUSTER_WAIT. `actions/sequences.py`'s `STREAMSETS_PIPELINES`
+  holds the 5 real pipeline (label, id) pairs (RDK, ODP, ODP PODS, RDKV, ATD),
+  replacing both the old `disable_streamsets_pipelines` and `enable_streamsets_pipelines`
+  manual_todo placeholders in `_prdmilbbspkfw02_sequences()`. Both directions verified
+  live end to end against all 5 real production pipelines (stop then restart all 5,
+  via the actual wired-in `RunController` code path) - all 10 actions succeeded;
+  real pipelines settled slower than the idle test pipeline (14-25s to stop, ~9.5s to
+  start) but well within the timeout. 90s timeout / 5s poll interval, per the operator.
+  **Still open**: the "scale ODP Preprocessing pipeline worker threads 5→8 before
+  restart, revert after" detail from the original sketch (never confirmed with the
+  operator, not built).
 
 - [ ] **Automate SH captain transfer / revert** — replace the
   `transfer_captain_static` and `revert_captain_dynamic` manual steps with Splunk REST

@@ -56,6 +56,7 @@ from typing import Callable, Protocol
 from auto_patchinator.actions.sequences import CRONTAB_BACKUP, splunk_bin_for
 from auto_patchinator.actions.types import Action, ActionKind, Identity
 from auto_patchinator.config.inventory import Inventory
+from auto_patchinator.executor import streamsets_api
 from auto_patchinator.executor.splunk_cli import find_member, member_health, parse_shcluster_members
 from auto_patchinator.executor.ssh import su_command
 from auto_patchinator.plan.run_plan import RunStepPlan
@@ -191,7 +192,8 @@ class _HostConnections:
 
 
 def is_forced_manual(
-    inventory: Inventory, scope: str, action: Action, splunk_api_credentials=None
+    inventory: Inventory, scope: str, action: Action, splunk_api_credentials=None,
+    streamsets_api_credentials=None,
 ) -> bool:
     if action.kind == ActionKind.MANUAL:
         return True
@@ -203,13 +205,22 @@ def is_forced_manual(
             and splunk_api_credentials.username
             and splunk_api_credentials.password
         )
+    if action.kind == ActionKind.STREAMSETS_PIPELINE:
+        # Needs StreamSets Data Collector API credentials, not an SSH identity - if
+        # they're not configured, the operator stops/checks the pipeline by hand.
+        return not (
+            streamsets_api_credentials
+            and streamsets_api_credentials.username
+            and streamsets_api_credentials.password
+        )
     if scope in (PRE_GROUP_SCOPE, POST_GROUP_SCOPE) or action.identity is None:
         return False
     return inventory.get(scope).is_manual_only(action.identity)
 
 
 def print_plan_summary(
-    run_plan: list[RunStepPlan], inventory: Inventory, splunk_api_credentials=None
+    run_plan: list[RunStepPlan], inventory: Inventory, splunk_api_credentials=None,
+    streamsets_api_credentials=None,
 ) -> None:
     env = inventory.environment.upper()
     if env == "PROD":
@@ -229,7 +240,7 @@ def print_plan_summary(
             for action in actions:
                 ident = action.identity.value if action.identity else "-"
                 forced = action.kind != ActionKind.MANUAL and is_forced_manual(
-                    inventory, hostname, action, splunk_api_credentials
+                    inventory, hostname, action, splunk_api_credentials, streamsets_api_credentials
                 )
                 manual_note = " [MANUAL ONLY on this host]" if forced else ""
                 print(f"    [{hostname}, {ident}] {action.name} ({action.kind.value}){manual_note}")
@@ -251,6 +262,7 @@ class RunController:
         show_explanations: bool | None = False,
         max_parallel_hosts: int = 1,
         splunk_api_credentials=None,
+        streamsets_api_credentials=None,
     ) -> None:
         self._plans = {p.excel_step: p for p in run_plan}
         self._order = [p.excel_step for p in run_plan]
@@ -262,6 +274,9 @@ class RunController:
         # Only consumed by CLUSTER_WAIT actions (post-restart cluster-health polling) -
         # None means those are forced manual instead (see is_forced_manual).
         self._splunk_api_credentials = splunk_api_credentials
+        # Only consumed by STREAMSETS_PIPELINE actions (prdmilbbspkfw02's pipeline
+        # stop/start) - None means those are forced manual instead.
+        self._streamsets_api_credentials = streamsets_api_credentials
         self._locked_mode: str | None = "auto" if full_auto else None
         # None = not yet decided; asked once, the first time manual guide mode is used.
         self._show_explanations: bool | None = show_explanations
@@ -1035,6 +1050,10 @@ class RunController:
                 self._execute_cluster_wait(scope, action, action_state, quiet, connections, ok_prefix)
                 return
 
+            if action.kind == ActionKind.STREAMSETS_PIPELINE:
+                self._execute_streamsets_pipeline(scope, action, action_state, quiet, connections, ok_prefix)
+                return
+
             role = self._inventory.get(scope).role if scope not in (PRE_GROUP_SCOPE, POST_GROUP_SCOPE) else None
             if connections is not None:
                 connection = connections.get(action.identity)
@@ -1154,8 +1173,95 @@ class RunController:
             _log.error("failed %s / %s: %s", scope, action.name, action_state.error)
         self._save()
 
+    def _execute_streamsets_pipeline(
+        self,
+        scope: str,
+        action: Action,
+        action_state: ActionState,
+        quiet: bool,
+        connections: "_HostConnections | None",
+        ok_prefix: str,
+    ) -> None:
+        """STREAMSETS_PIPELINE: POST start/stop for action.pipeline_id via the
+        StreamSets Data Collector REST API, then poll .../status until it reaches
+        action.target_status or action.timeout_seconds elapses. The stop/start call
+        itself only signals the transition (STARTING/STOPPING) - it doesn't wait for
+        it, so a single check right after would be wrong (verified live against a real
+        pipeline on prdmilbbspkfw02, 2026-09-22: STOPPED took ~4.6s to settle - see
+        TODO.md). Only reached when StreamSets API credentials are configured -
+        is_forced_manual routes this to a manual confirmation otherwise, so
+        self._streamsets_api_credentials is never None here."""
+        if self._dry_run:
+            action_state.status = ActionStatus.SUCCESS
+            action_state.output = f"simulated (dry-run) - {action.pipeline_label} pipeline not actually touched"
+            if not quiet:
+                print(f"{green(ok_prefix)}: {scope} / {action.name}")
+            _log.info("success %s / %s (dry-run, simulated)", scope, action.name)
+            self._save()
+            return
+
+        role = self._inventory.get(scope).role
+        owns_connection = connections is None
+        if connections is not None:
+            connection = connections.get(action.identity)
+        else:
+            connection = self._connection_factory(hostname=scope, identity=action.identity, role=role)
+            connection.connect()
+
+        creds = self._streamsets_api_credentials
+        verb = "start" if action.target_status == "RUNNING" else "stop"
+        last_status = "no status observed"
+        try:
+            trigger_command = streamsets_api.build_command(verb, action.pipeline_id, creds.username)
+            trigger_result = connection.run_plain_with_secret(trigger_command, creds.password, timeout=30)
+            if not streamsets_api.http_status_ok(trigger_result.output):
+                action_state.status = ActionStatus.FAILED
+                action_state.error = f"{verb} call for {action.pipeline_label} did not return HTTP 200"
+            else:
+                status_command = streamsets_api.build_command("status", action.pipeline_id, creds.username)
+                deadline = time.monotonic() + action.timeout_seconds
+                while True:
+                    status_result = connection.run_plain_with_secret(status_command, creds.password, timeout=30)
+                    last_status = streamsets_api.extract_status(status_result.output) or "no status observed"
+                    _log.debug(
+                        "streamsets_pipeline poll %s / %s (%s): status=%s",
+                        scope, action.name, action.pipeline_label, last_status,
+                    )
+                    if last_status == action.target_status:
+                        action_state.status = ActionStatus.SUCCESS
+                        action_state.output = f"{action.pipeline_label} pipeline reached {last_status}"
+                        break
+                    if time.monotonic() >= deadline:
+                        action_state.status = ActionStatus.FAILED
+                        action_state.error = (
+                            f"timed out after {action.timeout_seconds}s waiting for "
+                            f"{action.pipeline_label} to reach {action.target_status} "
+                            f"(last observed: {last_status})"
+                        )
+                        break
+                    time.sleep(action.poll_interval_seconds)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the operator, not swallowed
+            if connections is not None:
+                connections.drop(action.identity)
+            action_state.status = ActionStatus.FAILED
+            action_state.error = str(exc)
+            _log.exception("error running %s / %s", scope, action.name)
+        finally:
+            if owns_connection:
+                connection.close()
+
+        if action_state.status == ActionStatus.SUCCESS:
+            _log.info("success %s / %s: %s", scope, action.name, action_state.output)
+            if not quiet:
+                print(f"{green(ok_prefix)}: {scope} / {action.name}")
+        elif action_state.error:
+            _log.error("failed %s / %s: %s", scope, action.name, action_state.error)
+        self._save()
+
     def _is_forced_manual(self, scope: str, action: Action) -> bool:
-        return is_forced_manual(self._inventory, scope, action, self._splunk_api_credentials)
+        return is_forced_manual(
+            self._inventory, scope, action, self._splunk_api_credentials, self._streamsets_api_credentials
+        )
 
     def _ask_jump_target(self) -> int | None:
         raw = input(f"Jump to which step? ({', '.join(map(str, self._order))}, blank to cancel): ").strip()

@@ -9,7 +9,11 @@ from pathlib import Path
 from auto_patchinator.actions.types import Identity
 from auto_patchinator.config.inventory import load_inventory
 from auto_patchinator.executor.connectivity import STATUS_FAIL, STATUS_OK, STATUS_SKIP, ConnectivityResult, check_connectivity
-from auto_patchinator.executor.credentials import load_splunk_api_credentials, prompt_credentials
+from auto_patchinator.executor.credentials import (
+    load_splunk_api_credentials,
+    load_streamsets_api_credentials,
+    prompt_credentials,
+)
 from auto_patchinator.executor.ssh import DryRunConnection, SSHConnection
 from auto_patchinator.logging_setup import setup_run_logging
 from auto_patchinator.preflight import run_pretest
@@ -239,8 +243,11 @@ def cmd_run(args: argparse.Namespace) -> None:
     # Just an env/`.env` read, never prompts - safe to resolve once, early, and reuse
     # for the plan summary, the pretest, and the controller (CLUSTER_WAIT actions).
     splunk_api_credentials = load_splunk_api_credentials()
+    # Same idea, for STREAMSETS_PIPELINE actions (prdmilbbspkfw02's pipeline stop/start) -
+    # not consumed by the pretest, only the plan summary and the controller.
+    streamsets_api_credentials = load_streamsets_api_credentials()
 
-    print_plan_summary(run_plan, inventory, splunk_api_credentials)
+    print_plan_summary(run_plan, inventory, splunk_api_credentials, streamsets_api_credentials)
     if args.dry_run:
         print(green("MODE: DRY-RUN - every action will only be simulated, nothing runs on any host."))
         credentials = None
@@ -321,6 +328,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         run_plan, state, args.state_dir, connection_factory, inventory,
         dry_run=args.dry_run, full_auto=args.full_auto_mode, show_explanations=show_explanations,
         max_parallel_hosts=args.max_parallel_hosts, splunk_api_credentials=splunk_api_credentials,
+        streamsets_api_credentials=streamsets_api_credentials,
     )
     controller.run()
 

@@ -24,6 +24,35 @@ Open items, roughly in priority order.
   re-prompting; automatic mode shows an animated "..." while an action runs.
 - [x] Full DEBUG audit logging to `logs/run-<id>.log` (SSH send/receive, operator
   choices, passwords redacted).
+- [x] **`.env` completeness check, run before any plan/Excel work** (2026-09-24) — found
+  live: `.env` had gone missing from this machine entirely (not a code change - just
+  discovered mid-session), and today's pretest log
+  (`logs/run-pretest-20260924T150526.log`) had real `Authentication failed` errors for
+  several search heads as a result, since credential gaps used to only surface lazily,
+  wherever the first feature that needed them happened to hit the gap. `cli.py:cmd_run`
+  now calls `executor/credentials.py:ensure_env_credentials_complete()` first thing,
+  before `--excel`/`--inventory` resolution: checks `AP_USERNAME`/`AP_PASSWORD` plus the
+  four Splunk-API/StreamSets-API fields (`ENV_CREDENTIAL_FIELDS` — deliberately excludes
+  the alternative `SPLUNK_API_TOKEN`, since nothing in this codebase's real command
+  paths consumes a bare token, only `-auth user:password`), prompts for whatever's
+  missing (blank input skips a field - AP_USERNAME/AP_PASSWORD are the only ones this
+  tool can't run without, still enforced downstream by the existing
+  `prompt_credentials()`/`load_*_credentials()` fallbacks, not duplicated here), and
+  writes answers back into `.env` (`_write_env_values` - updates an existing `KEY=...`
+  line in place, appends one for a key not already present, leaves every other line
+  untouched; builds a fresh `.env` from `.env.example`'s structure, comments and all, if
+  `.env` doesn't exist yet at all; `chmod 600`s the file afterwards, best-effort). Same
+  change also switched the password prompt in `prompt_credentials()` from
+  `getpass.getpass()` to a plain `input()` — **terminal input is no longer masked
+  anywhere in this tool**, operator's explicit preference (easier to verify what was
+  typed/pasted than a blind prompt; `.env` itself already isn't visible to anyone
+  without shell access to this machine). Two fields also get per-field guidance in the
+  prompt itself (`_FIELD_HINTS`/`_FIELD_DEFAULTS`/`_prompt_text`): `AP_USERNAME` is
+  hinted to use the operator's own day-to-day Splunk login (no sensible default);
+  `SPLUNK_API_USER` is hinted to use the Splunk admin account and defaults to `"admin"`
+  on blank input (shown as `[admin]` in the prompt - deliberately not an actually
+  editable pre-filled field, which would need the `readline` module and break native
+  Windows support). 10 new tests in `tests/test_credentials.py` (19 total).
 - [x] **Fixed: `run_plain_with_secret` leaked the Splunk admin password into
   `logs/run-*.log` in cleartext** (found live, 2026-09-22, mid real wave-9 run — the
   password showed up ~194 times across the run log and both pretest logs from that

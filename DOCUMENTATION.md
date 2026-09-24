@@ -202,6 +202,31 @@ cp .env.example .env
 chmod 600 .env
 ```
 
+You don't strictly need to do this by hand: every `run` now starts by calling
+`credentials.ensure_env_credentials_complete()`, before any Excel/plan work. It checks
+`.env` for `AP_USERNAME`, `AP_PASSWORD`, `SPLUNK_API_USER`, `SPLUNK_API_PASSWORD`,
+`STREAMSETS_API_USER`, and `STREAMSETS_API_PASSWORD` (`ENV_CREDENTIAL_FIELDS` —
+deliberately excludes `SPLUNK_API_TOKEN`; nothing in this codebase's actual command
+paths consumes a bare token, only the `-auth user:password` form), interactively
+prompts for anything missing or blank, and writes the answers back into `.env` —
+creating it from `.env.example`'s structure (comments included) if it doesn't exist
+yet, and `chmod 600`ing it afterwards. This is a one-time prompt per field: once a
+field is in `.env`, later runs skip straight past it.
+
+Two fields get extra guidance in the prompt itself: `AP_USERNAME` is hinted to use
+*your own* Splunk login (the same one you use day to day) — there's no sensible
+default for it. `SPLUNK_API_USER` is hinted to use the Splunk admin account and shows
+`[admin]` as a default — press Enter to accept it, since that's virtually always the
+right account for the pretest/cluster-health/captain-transfer API checks in this
+environment. Every other field has neither a hint nor a default; blank input there just
+skips it.
+
+**None of this tool's terminal input is masked** — not this prompt, not the interactive
+PAS-login prompt either (`prompt_credentials()` uses plain `input()`, not `getpass`) —
+an explicit operator preference: easier to verify what was typed/pasted than a blind
+masked prompt, and `.env` itself already isn't visible to anyone without shell access
+to this machine.
+
 - `AP_USERNAME` / `AP_PASSWORD` — your own PAS login credentials. If both are set, a
   live run skips the interactive prompt entirely.
 - `SPLUNK_API_TOKEN` / `SPLUNK_API_USER` / `SPLUNK_API_PASSWORD` — now consumed by the
@@ -966,7 +991,7 @@ auto_patchinator/
     inventory.py               hosts.yaml loading + environment/PAS-suffix resolution
   executor/
     ssh.py                     PAS/PTY SSH layer + DryRunConnection
-    credentials.py             AP_USERNAME/PASSWORD + Splunk/StreamSets API creds
+    credentials.py             AP_USERNAME/PASSWORD + Splunk/StreamSets API creds + .env completeness check
   runner/
     controller.py              the interactive loop, all 3 run modes, failure retry menu
   state/

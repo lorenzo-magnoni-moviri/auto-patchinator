@@ -11,6 +11,7 @@ from auto_patchinator.config.inventory import load_inventory
 from auto_patchinator.config.streamsets_pipelines import load_streamsets_pipelines
 from auto_patchinator.executor.connectivity import STATUS_FAIL, STATUS_OK, STATUS_SKIP, ConnectivityResult, check_connectivity
 from auto_patchinator.executor.credentials import (
+    ensure_env_credentials_complete,
     load_splunk_api_credentials,
     load_streamsets_api_credentials,
     prompt_credentials,
@@ -223,6 +224,12 @@ def _load_team_steps(excel: str, team_filter: list[str]):
 def cmd_run(args: argparse.Namespace) -> None:
     if args.max_parallel_hosts < 1:
         raise SystemExit(f"--max-parallel-hosts must be at least 1, got {args.max_parallel_hosts}")
+
+    # Before even considering the wave Excel: .env is meant to be a stable, complete
+    # local config (unlike the plan, which changes every run) - get it there up front
+    # rather than letting each feature independently discover a gap mid-run.
+    ensure_env_credentials_complete()
+
     args.excel = args.excel or _prompt_for_excel_path()
     args.inventory = _resolve_inventory_path(args.inventory)
 

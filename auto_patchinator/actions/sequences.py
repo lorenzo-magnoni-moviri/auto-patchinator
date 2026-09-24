@@ -227,49 +227,58 @@ def search_head_simple_sequences() -> RoleSequences:
     )
 
 
-def captain_transfer_static(other_site_label: str, new_captain_host: str | None) -> Action:
-    """Manual step injected once before the first stretched-SH stop in a wave.
+# Zero live data yet on how long a real cluster-wide election/bootstrap takes to
+# settle - starting with the same conservative values as CLUSTER_WAIT (a similar
+# "cluster needs to converge" operation) and refining after a live rehearsal, same as
+# STREAMSETS_PIPELINE's poll interval/timeout were tuned after seeing real timings.
+_CAPTAIN_POLL_INTERVAL_SECONDS = 15
+_CAPTAIN_TIMEOUT_SECONDS = 600
 
-    new_captain_host is a concrete, deterministic example host on the other site
-    (Inventory.captain_candidate) - falls back to a generic placeholder if the
-    inventory has no stretched SH host there (shouldn't normally happen)."""
-    captain = new_captain_host or "<new-captain-host>"
-    return manual_todo(
-        "transfer_captain_static",
-        "Cluster-wide, before touching this site (as the splunk user):\n"
-        f"1. On the CHOSEN NEW CAPTAIN ({captain}, a host on {other_site_label}, the "
-        "site NOT being patched), run:\n"
-        f"   {SPLUNK_BIN} edit shcluster-config -mode captain "
-        f"-captain_uri https://{captain}.sky.local:8089 -election false\n"
-        "2. Then on EVERY OTHER search head in the whole cluster (both sites), run:\n"
-        f"   {SPLUNK_BIN} edit shcluster-config -mode member "
-        f"-captain_uri https://{captain}.sky.local:8089 -election false",
+
+def captain_transfer_static(new_captain_host: str, cluster_hostnames: tuple[str, ...]) -> Action:
+    """Injected once before the first stretched-SH stop in a wave (pre_group). Sets a
+    static captain on new_captain_host - a concrete host on the site NOT being patched
+    this wave (Inventory.captain_candidate) - before any per-host stop action runs, so
+    it's never touched during this wave's whole stop/patch/start cycle. Then polls
+    until the whole cluster (asked via new_captain_host itself) confirms the static
+    captain is actually in effect. cluster_hostnames is every stretched SH hostname
+    across both sites (Inventory.stretched_sh_hostnames()) - "every other member"
+    needs to be pointed at the new captain too, run via splunk identity only (no
+    admin API credentials needed - edit shcluster-config is a local config change,
+    not a REST-auth'd operation, unlike revert's bootstrap step)."""
+    return Action(
+        name="transfer_captain_static",
+        kind=ActionKind.CAPTAIN_TRANSFER,
+        identity=Identity.SPLUNK,
+        captain_host=new_captain_host,
+        cluster_hostnames=cluster_hostnames,
+        poll_interval_seconds=_CAPTAIN_POLL_INTERVAL_SECONDS,
+        timeout_seconds=_CAPTAIN_TIMEOUT_SECONDS,
+        note=f"Set a static captain on {new_captain_host} (on the site not being "
+             "patched this wave) and confirm the whole cluster recognizes it before "
+             "proceeding.",
     )
 
 
-def captain_revert_dynamic(captain_host: str | None, all_hosts: list[str] | None = None) -> Action:
-    """Manual step injected once after the last stretched-SH start in a wave.
-
-    captain_host should be the same host captain_transfer_static suggested (the
-    temporary captain being handed back to dynamic election); all_hosts is every
-    stretched SH hostname across both sites, for a concrete -servers_list."""
-    captain = captain_host or "<the captain chosen during transfer>"
-    servers_list = (
-        ",".join(f"https://{h}.sky.local:8089" for h in all_hosts)
-        if all_hosts else "https://<host1>.sky.local:8089,..."
-    )
-    return manual_todo(
-        "revert_captain_dynamic",
-        "Once all nodes on this site are fully back up (as the splunk user):\n"
-        f"1. On every member EXCEPT the current captain ({captain}, chosen during "
-        "transfer), then LASTLY on the captain itself, run:\n"
-        f"   {SPLUNK_BIN} edit shcluster-config -election true "
-        "-mgmt_uri https://<that-node>.sky.local:8089\n"
-        f"2. Then from {captain}, run:\n"
-        f"   {SPLUNK_BIN} bootstrap shcluster-captain -servers_list "
-        f"\"{servers_list}\" -auth admin:<password>\n"
-        "   DO NOT hardcode the admin password anywhere in this repo or commit "
-        "history - type it only at the live terminal.",
+def captain_revert_dynamic(captain_host: str, cluster_hostnames: tuple[str, ...]) -> Action:
+    """Injected once after the last stretched-SH start in a wave (post_group).
+    Re-enables dynamic election on every member except captain_host (the same host
+    captain_transfer_static set), then on captain_host itself, then bootstraps from
+    captain_host with the full cluster server list so a real election can pick the
+    ongoing captain. The bootstrap step needs Splunk admin API credentials
+    (-auth admin:<password>, sent via run_plain_with_secret - never a literal
+    command) - is_forced_manual routes this to a manual confirmation if they aren't
+    configured."""
+    return Action(
+        name="revert_captain_dynamic",
+        kind=ActionKind.CAPTAIN_REVERT,
+        identity=Identity.SPLUNK,
+        captain_host=captain_host,
+        cluster_hostnames=cluster_hostnames,
+        poll_interval_seconds=_CAPTAIN_POLL_INTERVAL_SECONDS,
+        timeout_seconds=_CAPTAIN_TIMEOUT_SECONDS,
+        note=f"Re-enable dynamic election cluster-wide and bootstrap from {captain_host} "
+             "so a real election can pick the ongoing captain.",
     )
 
 

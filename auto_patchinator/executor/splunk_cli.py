@@ -46,6 +46,24 @@ def parse_shcluster_members(output: str) -> dict[str, dict[str, str]]:
     return members
 
 
+def parse_captain(output: str) -> dict[str, str]:
+    """Parse the "Captain:" section of `splunk show shcluster-status --verbose` -
+    returns {field: value} for the whole section (e.g. 'label', 'dynamic_captain',
+    'elected_captain', 'mgmt_uri'), same right-aligned "key : value" table shape as
+    the "Members:"/"KV store members:" sections. Every member reports the same
+    cluster-wide captain info (confirmed live, 2026-09-16, see TODO.md - same "ask
+    any member, get the whole cluster's picture" pattern as the other sections).
+    Empty dict if no "Captain:" section was found at all. Extracted from
+    preflight.py's original private regex (same exact pattern, live-verified) so both
+    the read-only pretest check and CAPTAIN_TRANSFER/CAPTAIN_REVERT's post-action
+    verification share one implementation."""
+    output = normalize_line_endings(output)
+    section = re.search(r"Captain:\s*\n(.*?)(?:\n\s*\n|\nCluster Manager|\nMembers:|\Z)", output, re.DOTALL)
+    if not section:
+        return {}
+    return dict(re.findall(r"^\s+(\S+)\s*:\s*(.*)$", section.group(1), re.MULTILINE))
+
+
 def find_member(members: dict[str, dict[str, str]], hostname: str) -> dict[str, str] | None:
     """Members are keyed by FQDN ('prdrmlbbspksh01.sky.local'); `hostname` is
     typically the short inventory name ('prdrmlbbspksh01') - match either an exact

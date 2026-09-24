@@ -21,6 +21,8 @@ class ActionKind(str, Enum):
     WAIT = "wait"
     CLUSTER_WAIT = "cluster_wait"  # poll a Splunk cluster health condition until met or timeout
     STREAMSETS_PIPELINE = "streamsets_pipeline"  # POST start/stop, then poll status until target or timeout
+    CAPTAIN_TRANSFER = "captain_transfer"  # set a static captain cluster-wide, then poll to confirm
+    CAPTAIN_REVERT = "captain_revert"  # re-enable dynamic election cluster-wide + bootstrap, then poll to confirm
 
 
 @dataclass(frozen=True)
@@ -50,6 +52,8 @@ class Action:
     pipeline_id: str | None = None
     pipeline_label: str | None = None
     target_status: str | None = None
+    captain_host: str | None = None
+    cluster_hostnames: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.kind == ActionKind.PLAIN and not self.command:
@@ -67,8 +71,23 @@ class Action:
                 f"action {self.name!r}: STREAMSETS_PIPELINE action requires pipeline_id, "
                 "target_status, and poll_interval_seconds"
             )
+        if self.kind in (ActionKind.CAPTAIN_TRANSFER, ActionKind.CAPTAIN_REVERT) and (
+            not self.captain_host or not self.cluster_hostnames or self.poll_interval_seconds is None
+        ):
+            raise ValueError(
+                f"action {self.name!r}: {self.kind.value} action requires captain_host, "
+                "cluster_hostnames, and poll_interval_seconds"
+            )
         if (
-            self.kind in (ActionKind.PLAIN, ActionKind.INTERACTIVE, ActionKind.CLUSTER_WAIT, ActionKind.STREAMSETS_PIPELINE)
+            self.kind
+            in (
+                ActionKind.PLAIN,
+                ActionKind.INTERACTIVE,
+                ActionKind.CLUSTER_WAIT,
+                ActionKind.STREAMSETS_PIPELINE,
+                ActionKind.CAPTAIN_TRANSFER,
+                ActionKind.CAPTAIN_REVERT,
+            )
             and self.identity is None
         ):
             raise ValueError(f"action {self.name!r}: {self.kind.value} action requires an identity")

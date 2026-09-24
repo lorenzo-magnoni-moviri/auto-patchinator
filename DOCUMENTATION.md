@@ -204,10 +204,13 @@ chmod 600 .env
 
 - `AP_USERNAME` / `AP_PASSWORD` — your own PAS login credentials. If both are set, a
   live run skips the interactive prompt entirely.
-- `SPLUNK_API_TOKEN` / `SPLUNK_API_USER` / `SPLUNK_API_PASSWORD` — **reserved for future
-  automations** (captain transfer, cluster status polling — see [§16](#16-roadmap)).
-  Loadable via `credentials.load_splunk_api_credentials()`, but nothing in the tool
-  consumes them yet.
+- `SPLUNK_API_TOKEN` / `SPLUNK_API_USER` / `SPLUNK_API_PASSWORD` — now consumed by the
+  pre-patch pretest's captain/election/KV-store checks, `CLUSTER_WAIT`'s post-restart
+  cluster-health poll, and `CAPTAIN_TRANSFER`/`CAPTAIN_REVERT`'s captain-status
+  verification (the `-auth user:password` form specifically - `SPLUNK_API_USER` +
+  `SPLUNK_API_PASSWORD`, not a bare token). Loadable via
+  `credentials.load_splunk_api_credentials()`; every feature that needs them degrades
+  to a manual step (never a hard failure) if they aren't set.
 
 `.env` is gitignored. **Never commit real credentials, and never hardcode the Splunk
 admin password used by `bootstrap shcluster-captain -auth admin:<password>` anywhere in
@@ -543,30 +546,37 @@ until `RUNNING`), then `enable_crontab`.
 
 ### Captain transfer (stretched search-head cluster)
 
-Injected **once per wave**, not per group (see [§6.6](#66-run_planpy)). The instructions
-name a **concrete** host, not a `<placeholder>`: `Inventory.captain_candidate(site)`
-picks the lowest-numbered stretched-SH hostname on the site *not* being patched (e.g.
-`prdrmlbbspksh01`), and the same host is referenced consistently in both the transfer
-and the revert message so the operator doesn't have to track it themselves:
+Injected **once per wave**, not per group (see [§6.6](#66-run_planpy)). Automated
+(`ActionKind.CAPTAIN_TRANSFER`/`CAPTAIN_REVERT`, built 2026-09-22) when Splunk API
+credentials are configured; otherwise forced manual with the exact command templates
+shown, same as everywhere else automation needs credentials that might not be set.
+`Inventory.captain_candidate(site)` picks the lowest-numbered stretched-SH hostname on
+the site *not* being patched (e.g. `prdrmlbbspksh01`) as the temporary captain - the
+same concrete host both directions use:
 
-- **Before the first stretched-SH stop in the wave** — manual step: on the chosen new
-  captain (the concrete host above), run
+- **Before the first stretched-SH stop in the wave** — on the chosen new captain, runs
   `<bin> edit shcluster-config -mode captain -captain_uri https://<that-host>.sky.local:8089 -election false`;
-  then on every *other* search head in the whole cluster (both sites), run the member
-  variant of the same command.
-- **After the last stretched-SH start in the wave** — manual step: re-enable dynamic
-  election on every member except the current captain (the same concrete host), then
-  the captain itself; then from that host,
+  then on every *other* search head in the whole cluster (both sites), **concurrently**
+  (`--max-parallel-hosts` workers), the member variant of the same command. Then polls
+  `shcluster-status --verbose` until the whole cluster confirms the static captain, up
+  to a 600s timeout (15s apart) - no live data yet on real settle time, so this starts
+  conservative, same as `CLUSTER_WAIT`.
+- **After the last stretched-SH start in the wave** — re-enables dynamic election on
+  every member except the current captain (concurrently), then the captain itself,
+  then from that host,
   `bootstrap shcluster-captain -servers_list "https://host1.sky.local:8089,..." -auth admin:<password>`
   — the server list is the actual full set of stretched-SH hostnames across both sites
-  (`Inventory.stretched_sh_hostnames()`), not a placeholder either.
-  **The admin password is never stored in this repo — type it only at the live
-  terminal when performing this step.**
+  (`Inventory.stretched_sh_hostnames()`). Then polls until a dynamic captain is
+  confirmed. **The admin password is never stored in this repo or sent as literal
+  command text** — `SSHConnection.run_plain_with_secret` sets it via a redacted
+  shell-variable send first, same as the Splunk API pretest checks.
 
 These are cluster-wide, touch every search head (not just the ones in scope for the
-current Excel step), require choosing which host becomes captain, and need a Splunk
-admin credential — which is exactly why they're deliberately manual rather than
-automated. The tool shows the exact command templates; it does not run them.
+current Excel step) - the pretest's connectivity check now covers the whole cluster for
+exactly this reason (see [§13](#13-known-issues-and-operational-findings)). Forced
+manual if any cluster host has the splunk identity marked CyberArk-GUI-only, or if
+Splunk API credentials aren't configured (the verification poll needs `-auth` even
+though `edit shcluster-config` itself doesn't).
 
 ---
 
@@ -903,8 +913,12 @@ check `TODO.md` for anything more recent, since this list will drift.
 - **`send_mail`** is a manual placeholder appended to every single Excel step. Not yet
   automated (see [§16](#16-roadmap)).
 
-- **Search-head captain transfer/revert** are *intentionally* manual, not a gap to be
-  closed casually — see [§8](#8-action-sequences-per-role) for why.
+- **Search-head captain transfer/revert** are automated (`CAPTAIN_TRANSFER`/
+  `CAPTAIN_REVERT` actions, built 2026-09-22 - see [§8](#8-action-sequences-per-role)
+  for the mechanics and TODO.md for status) - **not yet exercised live**; the operator
+  wants the transfer half tested live first, revert after. Forced manual, with the
+  exact command templates, whenever it can't be automated (no Splunk API credentials,
+  or a manual-only-identity host in the cluster).
 
 - **Indexer post-restart Search/Replication Factor check** is deferred to v2 — no
   automated wait-and-verify that the cluster is healthy again after an indexer restarts.
@@ -952,7 +966,7 @@ auto_patchinator/
     inventory.py               hosts.yaml loading + environment/PAS-suffix resolution
   executor/
     ssh.py                     PAS/PTY SSH layer + DryRunConnection
-    credentials.py             AP_USERNAME/PASSWORD + reserved Splunk API creds
+    credentials.py             AP_USERNAME/PASSWORD + Splunk/StreamSets API creds
   runner/
     controller.py              the interactive loop, all 3 run modes, failure retry menu
   state/
@@ -994,9 +1008,8 @@ recent than this document. In summary, the main open threads are:
    (test environment broadly broken; `prdrmlbbspkdp01` in prod) — blocking further
    root-identity testing/use.
 2. **Complete one full, unattended live wave against test** end to end.
-3. **Automate what's currently manual**, in roughly this order of value: `send_mail`
-   (SMTP), then (bigger lift, needs the already-scaffolded Splunk API credentials)
-   captain transfer/revert. StreamSets stop/start on the fw02 override is already
-   automated.
+3. **Automate what's currently manual**: `send_mail` (SMTP) is the remaining one.
+   StreamSets stop/start on the fw02 override and SH captain transfer/revert are both
+   already automated (the latter not yet live-tested - see TODO.md).
 4. **Nice-to-have infrastructure**: containerizing the app, recording the target
-   `--environment` in the report header, parallelizing per-host actions within a group.
+   `--environment` in the report header.

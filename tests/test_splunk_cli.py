@@ -6,6 +6,7 @@ from auto_patchinator.executor.splunk_cli import (
     find_member,
     member_health,
     normalize_line_endings,
+    parse_captain,
     parse_shcluster_members,
 )
 
@@ -58,6 +59,22 @@ def test_parse_shcluster_members_does_not_pick_up_the_captain_section():
     members = parse_shcluster_members(REAL_MEMBERS_OUTPUT)
     assert "label" not in members  # would indicate the Captain: section leaked in
     assert all("dynamic_captain" not in fields for fields in members.values())
+
+
+def test_parse_captain_extracts_the_captain_section_fields():
+    fields = parse_captain(REAL_MEMBERS_OUTPUT)
+    assert fields["dynamic_captain"] == "1"
+    assert fields["label"] == "prdmilbbspksh04.sky.local"
+
+
+def test_parse_captain_does_not_pick_up_members_section():
+    fields = parse_captain(REAL_MEMBERS_OUTPUT)
+    assert fields.get("label") == "prdmilbbspksh04.sky.local"  # the captain's, not a member's
+    assert "status" not in fields  # a Members:-only field never leaks in
+
+
+def test_parse_captain_empty_when_no_captain_section():
+    assert parse_captain("no captain info here at all") == {}
 
 
 def test_find_member_matches_short_hostname_against_fqdn_key():

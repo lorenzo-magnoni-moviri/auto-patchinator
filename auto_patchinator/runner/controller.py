@@ -57,7 +57,7 @@ from auto_patchinator.actions.sequences import CRONTAB_BACKUP, splunk_bin_for
 from auto_patchinator.actions.types import Action, ActionKind, Identity
 from auto_patchinator.config.inventory import Inventory
 from auto_patchinator.executor import streamsets_api
-from auto_patchinator.executor.splunk_cli import find_member, member_health, parse_shcluster_members
+from auto_patchinator.executor.splunk_cli import find_member, member_health, parse_captain, parse_shcluster_members
 from auto_patchinator.executor.ssh import su_command
 from auto_patchinator.plan.run_plan import RunStepPlan
 from auto_patchinator.state import store
@@ -204,6 +204,23 @@ def is_forced_manual(
             splunk_api_credentials
             and splunk_api_credentials.username
             and splunk_api_credentials.password
+        )
+    if action.kind in (ActionKind.CAPTAIN_TRANSFER, ActionKind.CAPTAIN_REVERT):
+        # Both need Splunk admin credentials: CAPTAIN_REVERT's bootstrap step needs
+        # -auth directly, and CAPTAIN_TRANSFER's own commands don't but its
+        # verification poll (splunk show shcluster-status --verbose) does too, same
+        # as CLUSTER_WAIT - without credentials there's no way to confirm either one
+        # actually worked, so both are forced manual together. Also forced manual if
+        # any host in the cluster has the splunk identity marked CyberArk-GUI-only -
+        # can't automate "touch every member" if one member can't be reached at all.
+        if not (
+            splunk_api_credentials
+            and splunk_api_credentials.username
+            and splunk_api_credentials.password
+        ):
+            return True
+        return any(
+            inventory.get(h).is_manual_only(Identity.SPLUNK) for h in (action.cluster_hostnames or ())
         )
     if action.kind == ActionKind.STREAMSETS_PIPELINE:
         # Needs StreamSets Data Collector API credentials, not an SSH identity - if
@@ -1068,6 +1085,14 @@ class RunController:
                 self._execute_streamsets_pipeline(scope, action, action_state, quiet, connections, ok_prefix)
                 return
 
+            if action.kind == ActionKind.CAPTAIN_TRANSFER:
+                self._execute_captain_transfer(scope, action, action_state, quiet, ok_prefix)
+                return
+
+            if action.kind == ActionKind.CAPTAIN_REVERT:
+                self._execute_captain_revert(scope, action, action_state, quiet, ok_prefix)
+                return
+
             role = self._inventory.get(scope).role if scope not in (PRE_GROUP_SCOPE, POST_GROUP_SCOPE) else None
             if connections is not None:
                 connection = connections.get(action.identity)
@@ -1268,6 +1293,263 @@ class RunController:
             _log.info("success %s / %s: %s", scope, action.name, action_state.output)
             if not quiet:
                 print(f"{green(ok_prefix)}: {scope} / {action.name}")
+        elif action_state.error:
+            _log.error("failed %s / %s: %s", scope, action.name, action_state.error)
+        self._save()
+
+    def _run_captain_config_command(self, hostname: str, command: str, secret: str) -> tuple[str, bool, str]:
+        """Opens its own ad-hoc connection (splunk identity - captain transfer/revert
+        never need root), runs one `edit shcluster-config` command (with -auth, via
+        run_plain_with_secret so the password is never sent as literal command text),
+        closes. Used for the "every other member" step of both CAPTAIN_TRANSFER and
+        CAPTAIN_REVERT - one call per host, run concurrently via a ThreadPoolExecutor
+        (max_workers=self._max_parallel_hosts, the same PAS-gateway-tolerance dial
+        used everywhere else concurrency happens in this tool)."""
+        role = self._inventory.get(hostname).role
+        connection = self._connection_factory(hostname=hostname, identity=Identity.SPLUNK, role=role)
+        try:
+            connection.connect()
+            result = connection.run_plain_with_secret(command, secret, timeout=60)
+            return hostname, result.success, ("ok" if result.success else result.output)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the operator, not swallowed
+            return hostname, False, str(exc)
+        finally:
+            connection.close()
+
+    def _run_captain_config_on_other_members(self, action: Action, command: str, secret: str) -> list[str]:
+        """Runs `command` concurrently on every host in action.cluster_hostnames
+        except action.captain_host - returns a list of "hostname: detail" strings for
+        any that failed (empty list = every member succeeded)."""
+        other_members = [h for h in action.cluster_hostnames if h != action.captain_host]
+        if not other_members:
+            return []
+        failures = []
+        with ThreadPoolExecutor(max_workers=self._max_parallel_hosts) as pool:
+            futures = {
+                pool.submit(self._run_captain_config_command, h, command, secret): h for h in other_members
+            }
+            for future in as_completed(futures):
+                hostname, success, detail = future.result()
+                if not success:
+                    failures.append(f"{hostname}: {detail}")
+        return failures
+
+    def _execute_captain_transfer(
+        self, scope: str, action: Action, action_state: ActionState, quiet: bool, ok_prefix: str
+    ) -> None:
+        """CAPTAIN_TRANSFER: sets a static captain on action.captain_host - a host on
+        the site NOT being patched this wave (Inventory.captain_candidate), run before
+        any per-host stop action, so it's never touched during this wave's whole
+        stop/patch/start cycle - then points every other stretched-SH member (both
+        sites) at it, then polls until the whole cluster confirms the static captain
+        is actually in effect. Only reached when Splunk API credentials are
+        configured - is_forced_manual routes this to a manual confirmation otherwise,
+        so self._splunk_api_credentials is never None here. Every command sent
+        (edit shcluster-config and the verification poll alike) includes -auth, sent
+        via run_plain_with_secret so the password is never literal command text.
+        Always opens its own connections (never passed a _HostConnections cache -
+        this is a pre_group action, spanning multiple hosts, not one host's
+        per-step action list)."""
+        if self._dry_run:
+            action_state.status = ActionStatus.SUCCESS
+            action_state.output = f"simulated (dry-run) - captain not actually transferred to {action.captain_host}"
+            if not quiet:
+                print(f"{green(ok_prefix)}: {_scope_label(scope)} / {action.name}")
+            _log.info("success %s / %s (dry-run, simulated)", scope, action.name)
+            self._save()
+            return
+
+        captain_host = action.captain_host
+        role = self._inventory.get(captain_host).role
+        splunk_bin = splunk_bin_for(role)
+        connection = self._connection_factory(hostname=captain_host, identity=Identity.SPLUNK, role=role)
+        creds = self._splunk_api_credentials
+        try:
+            connection.connect()
+            become_captain_cmd = (
+                f"{splunk_bin} edit shcluster-config -mode captain "
+                f'-captain_uri https://{captain_host}.sky.local:8089 -election false '
+                f'-auth "{creds.username}:$AP_SECRET"'
+            )
+            result = connection.run_plain_with_secret(become_captain_cmd, creds.password, timeout=60)
+            if not result.success:
+                action_state.status = ActionStatus.FAILED
+                action_state.error = f"setting {captain_host} as static captain failed: {result.output}"
+            else:
+                become_member_cmd = (
+                    f"{splunk_bin} edit shcluster-config -mode member "
+                    f'-captain_uri https://{captain_host}.sky.local:8089 -election false '
+                    f'-auth "{creds.username}:$AP_SECRET"'
+                )
+                failures = self._run_captain_config_on_other_members(action, become_member_cmd, creds.password)
+                if failures:
+                    action_state.status = ActionStatus.FAILED
+                    action_state.error = (
+                        f"{len(failures)} member(s) failed to point at the new captain: "
+                        + "; ".join(failures)
+                    )
+                else:
+                    status_command = (
+                        f'{splunk_bin} show shcluster-status --verbose -auth "{creds.username}:$AP_SECRET"'
+                    )
+                    deadline = time.monotonic() + action.timeout_seconds
+                    description = "no poll attempt completed"
+                    while True:
+                        result = connection.run_plain_with_secret(status_command, creds.password, timeout=30)
+                        fields = parse_captain(result.output)
+                        label = fields.get("label", "")
+                        is_captain = find_member({label: fields}, captain_host) is not None
+                        is_static = fields.get("dynamic_captain") == "0"
+                        description = (
+                            f"label={label!r}  dynamic_captain={fields.get('dynamic_captain', '<missing>')!r}"
+                        )
+                        _log.debug(
+                            "captain_transfer poll %s: captain_confirmed=%s static=%s %s",
+                            action.name, is_captain, is_static, description,
+                        )
+                        if is_captain and is_static:
+                            action_state.status = ActionStatus.SUCCESS
+                            action_state.output = f"static captain confirmed on {captain_host}: {description}"
+                            break
+                        if time.monotonic() >= deadline:
+                            action_state.status = ActionStatus.FAILED
+                            action_state.error = (
+                                f"timed out after {action.timeout_seconds}s waiting for the cluster "
+                                f"to confirm the static captain (last: {description})"
+                            )
+                            break
+                        time.sleep(action.poll_interval_seconds)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the operator, not swallowed
+            action_state.status = ActionStatus.FAILED
+            action_state.error = str(exc)
+            _log.exception("error running %s / %s", scope, action.name)
+        finally:
+            connection.close()
+
+        if action_state.status == ActionStatus.SUCCESS:
+            _log.info("success %s / %s: %s", scope, action.name, action_state.output)
+            if not quiet:
+                print(f"{green(ok_prefix)}: {_scope_label(scope)} / {action.name}")
+        elif action_state.error:
+            _log.error("failed %s / %s: %s", scope, action.name, action_state.error)
+        self._save()
+
+    def _execute_captain_revert(
+        self, scope: str, action: Action, action_state: ActionState, quiet: bool, ok_prefix: str
+    ) -> None:
+        """CAPTAIN_REVERT: re-enables dynamic election on every stretched-SH member
+        except action.captain_host, then on captain_host itself, then bootstraps from
+        captain_host with the full cluster server list so a real election can pick
+        the ongoing captain, then polls until a dynamic captain is confirmed. Only
+        reached when Splunk API credentials are configured - is_forced_manual routes
+        this to a manual confirmation otherwise, so self._splunk_api_credentials is
+        never None here. Every command sent includes -auth (the bootstrap step needs
+        it regardless; the edit shcluster-config calls are sent with it too, on the
+        operator's request), via run_plain_with_secret so the password is never
+        literal command text."""
+        if self._dry_run:
+            action_state.status = ActionStatus.SUCCESS
+            action_state.output = "simulated (dry-run) - dynamic election not actually reverted"
+            if not quiet:
+                print(f"{green(ok_prefix)}: {_scope_label(scope)} / {action.name}")
+            _log.info("success %s / %s (dry-run, simulated)", scope, action.name)
+            self._save()
+            return
+
+        captain_host = action.captain_host
+        role = self._inventory.get(captain_host).role
+        splunk_bin = splunk_bin_for(role)
+        creds = self._splunk_api_credentials
+        # Each host needs ITS OWN hostname in -mgmt_uri (self-referential), not one
+        # shared command - so this can't reuse _run_captain_config_on_other_members
+        # (built for transfer's "become member", which genuinely is one identical
+        # command for every other host).
+        election_true_cmd_for = lambda h: (  # noqa: E731 - short, used once per host below
+            f"{splunk_bin} edit shcluster-config -election true -mgmt_uri https://{h}.sky.local:8089 "
+            f'-auth "{creds.username}:$AP_SECRET"'
+        )
+
+        other_members = [h for h in action.cluster_hostnames if h != captain_host]
+        failures = []
+        if other_members:
+            with ThreadPoolExecutor(max_workers=self._max_parallel_hosts) as pool:
+                futures = {
+                    pool.submit(self._run_captain_config_command, h, election_true_cmd_for(h), creds.password): h
+                    for h in other_members
+                }
+                for future in as_completed(futures):
+                    hostname, success, detail = future.result()
+                    if not success:
+                        failures.append(f"{hostname}: {detail}")
+
+        if failures:
+            action_state.status = ActionStatus.FAILED
+            action_state.error = (
+                f"{len(failures)} member(s) failed to re-enable dynamic election: " + "; ".join(failures)
+            )
+            _log.error("failed %s / %s: %s", scope, action.name, action_state.error)
+            self._save()
+            return
+
+        connection = self._connection_factory(hostname=captain_host, identity=Identity.SPLUNK, role=role)
+        try:
+            connection.connect()
+            result = connection.run_plain_with_secret(election_true_cmd_for(captain_host), creds.password, timeout=60)
+            if not result.success:
+                action_state.status = ActionStatus.FAILED
+                action_state.error = (
+                    f"re-enabling dynamic election on {captain_host} itself failed: {result.output}"
+                )
+            else:
+                servers_list = ",".join(f"https://{h}.sky.local:8089" for h in sorted(action.cluster_hostnames))
+                bootstrap_cmd = (
+                    f'{splunk_bin} bootstrap shcluster-captain -servers_list "{servers_list}" '
+                    f'-auth "{creds.username}:$AP_SECRET"'
+                )
+                result = connection.run_plain_with_secret(bootstrap_cmd, creds.password, timeout=60)
+                if not result.success:
+                    action_state.status = ActionStatus.FAILED
+                    action_state.error = f"bootstrap shcluster-captain from {captain_host} failed"
+                else:
+                    status_command = (
+                        f'{splunk_bin} show shcluster-status --verbose -auth "{creds.username}:$AP_SECRET"'
+                    )
+                    deadline = time.monotonic() + action.timeout_seconds
+                    description = "no poll attempt completed"
+                    while True:
+                        result = connection.run_plain_with_secret(status_command, creds.password, timeout=30)
+                        fields = parse_captain(result.output)
+                        is_dynamic = fields.get("dynamic_captain") == "1"
+                        description = (
+                            f"label={fields.get('label', '<missing>')!r}  "
+                            f"dynamic_captain={fields.get('dynamic_captain', '<missing>')!r}"
+                        )
+                        _log.debug(
+                            "captain_revert poll %s: dynamic=%s %s", action.name, is_dynamic, description
+                        )
+                        if is_dynamic:
+                            action_state.status = ActionStatus.SUCCESS
+                            action_state.output = f"dynamic captain confirmed: {description}"
+                            break
+                        if time.monotonic() >= deadline:
+                            action_state.status = ActionStatus.FAILED
+                            action_state.error = (
+                                f"timed out after {action.timeout_seconds}s waiting for a dynamic "
+                                f"captain to be confirmed (last: {description})"
+                            )
+                            break
+                        time.sleep(action.poll_interval_seconds)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the operator, not swallowed
+            action_state.status = ActionStatus.FAILED
+            action_state.error = str(exc)
+            _log.exception("error running %s / %s", scope, action.name)
+        finally:
+            connection.close()
+
+        if action_state.status == ActionStatus.SUCCESS:
+            _log.info("success %s / %s: %s", scope, action.name, action_state.output)
+            if not quiet:
+                print(f"{green(ok_prefix)}: {_scope_label(scope)} / {action.name}")
         elif action_state.error:
             _log.error("failed %s / %s: %s", scope, action.name, action_state.error)
         self._save()

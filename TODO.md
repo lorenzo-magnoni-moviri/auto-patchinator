@@ -389,26 +389,45 @@ Open items, roughly in priority order.
   restart, revert after" detail from the original sketch (never confirmed with the
   operator, not built).
 
-- [ ] **Automate SH captain transfer / revert** — replace the
-  `transfer_captain_static` and `revert_captain_dynamic` manual steps with Splunk REST
-  API calls, using `credentials.load_splunk_api_credentials()` (now available, see
-  "Recently done"):
-  - Transfer: `POST /services/shcluster/captain/transfer` on the current captain, or
-    `edit shcluster-config -mode captain` on the target.
-  - Revert: re-enable dynamic election on all members, then bootstrap from the captain.
-  Keep both as manual fallbacks if the API call fails.
-  - Prerequisite (2026-09-22, done): the pretest now checks splunk-identity
+- [x] **Automate SH captain transfer / revert - built, not yet live-tested**
+  (2026-09-22). `transfer_captain_static`/`revert_captain_dynamic`
+  (`actions/sequences.py`) now build real `ActionKind.CAPTAIN_TRANSFER`/
+  `CAPTAIN_REVERT` actions instead of `manual_todo` placeholders, executed by
+  `RunController._execute_captain_transfer`/`_execute_captain_revert`
+  (`runner/controller.py`):
+  - **Transfer** (pre_group, before any per-host stop): `edit shcluster-config -mode
+    captain` on the new captain (`Inventory.captain_candidate` on the site NOT being
+    patched this wave - never touched during this wave's whole cycle, so the earlier
+    "no live peer" concern below doesn't apply here), then `-mode member` on every
+    other stretched-SH host across both sites **concurrently**
+    (`--max-parallel-hosts` workers), then polls `shcluster-status --verbose` until
+    the whole cluster confirms the static captain. No `-auth` needed for the
+    `edit shcluster-config` calls themselves (confirmed from the original manual
+    instructions), but the verification poll needs it, same as `CLUSTER_WAIT`.
+  - **Revert** (post_group, after the last per-host start): `edit shcluster-config
+    -election true` on every other member concurrently, then on the captain itself,
+    then `bootstrap shcluster-captain -servers_list "..." -auth` from the captain
+    (password via `run_plain_with_secret`, never literal), then polls until a
+    dynamic captain is confirmed.
+  - Both forced manual (`is_forced_manual`) when Splunk API credentials aren't
+    configured, or when any cluster host has the splunk identity marked
+    CyberArk-GUI-only (can't automate "touch every member" otherwise) - same
+    manual-fallback guarantee CLAUDE.md requires.
+  - `executor/splunk_cli.py` gained `parse_captain()` (the "Captain:" section's
+    `label`/`dynamic_captain`/etc. fields), extracted from `preflight.py`'s
+    previously-private regex so the pretest's read-only check and this verification
+    share one implementation.
+  - Prerequisite (2026-09-22, done first): the pretest now checks splunk-identity
     connectivity to the *whole* stretched-SH cluster (both sites), not just this
-    wave's own site, whenever the plan touches `search_head_stretched` at all - see
-    `preflight.py`'s "rest of the stretched SH cluster" block. Needed because
-    transfer/revert touch every member cluster-wide, and this now catches an
-    unreachable untouched-site host before the operator gets to that manual step,
-    even ahead of this item actually being automated.
-  - Still unresolved from the earlier design pass: all members of a stretched-SH
-    group get stopped concurrently in the same step (`--max-parallel-hosts`), so
-    there's no live peer left to hand off captaincy to at the moment of shutdown -
-    "transfer to a peer" doesn't map cleanly onto how this cluster is patched. Worth
-    deciding before building the transfer half specifically.
+    wave's own site - see `preflight.py`'s "rest of the stretched SH cluster" block.
+  - The earlier "no live peer to hand off captaincy to" concern (stretched-SH groups
+    stop concurrently) turned out not to apply: the temporary captain lives on the
+    untouched site the whole time, so it's never part of the concurrent stop. That
+    finding was really about the unrelated Milano `mso` cluster incident, which has
+    no transfer mechanism at all and is out of scope here.
+  - Dry-run verified against the real prod wave: resolves to the correct temporary
+    captain and the correct 10-host cluster list. **Not yet exercised live** - the
+    operator wants the transfer half tested live first, revert after.
 
 - [x] **Cluster status validation via Splunk API - search head side done** (2026-09-16).
   Indexer cluster (poll `GET /services/cluster/master/peers`/S&R factor) is still open -

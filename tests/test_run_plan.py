@@ -47,9 +47,10 @@ def test_captain_transfer_injected_once_before_first_stretched_stop(inventory):
     ]
     assert transfers == [(2, "transfer_captain_static")]   # only the FIRST stop
     assert reverts == [(7, "revert_captain_dynamic")]      # only the LAST start
-    # the transfer instruction names the other site (shx01 is milano -> roma)
-    transfer_note = plans[0].pre_group_actions[0].note
-    assert "roma" in transfer_note
+    # the new captain is on the other site (shx01 is milano -> roma's shx02)
+    transfer_action = plans[0].pre_group_actions[0]
+    assert transfer_action.captain_host == "shx02"
+    assert transfer_action.cluster_hostnames == ("shx01", "shx02")
 
 
 def test_group_actions_deduped_per_role_not_per_host(inventory):

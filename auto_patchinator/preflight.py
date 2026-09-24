@@ -61,6 +61,7 @@ from auto_patchinator.actions.types import Identity
 from auto_patchinator.config.inventory import Inventory
 from auto_patchinator.executor.connectivity import STATUS_FAIL, STATUS_OK, STATUS_SKIP, check_connectivity
 from auto_patchinator.executor.credentials import Credentials, SplunkApiCredentials
+from auto_patchinator.executor.splunk_cli import parse_captain
 from auto_patchinator.executor.ssh import SSHConnection
 from auto_patchinator.plan.run_plan import RunStepPlan
 from auto_patchinator.term import green, red, yellow
@@ -240,26 +241,20 @@ def _check_captain(
         print(red(f"  FAIL  {exc}"))
         return False
 
-    # Best-effort parse of `splunk show shcluster-status --verbose` text output -
-    # scoped to the "Captain:" section only, so a "label :" line for some other
-    # member further down isn't mistaken for the captain's. Field names/format
-    # confirmed live (2026-09-16): a right-aligned "key : value" table using the
-    # same raw field names as the REST content dict (lowercase, underscored) - not
-    # human-prose labels like "Dynamic captain:".
-    captain_section = re.search(r"Captain:\s*\n(.*?)(?:\n\s*\n|\nCluster Manager|\nMembers:|\Z)", output, re.DOTALL)
-    section_text = captain_section.group(1) if captain_section else output
-    label_match = re.search(r"\blabel\s*:\s*(\S+)", section_text)
-    dynamic_match = re.search(r"\bdynamic_captain\s*:\s*(\d|true|false)", section_text, re.IGNORECASE)
-
-    captain_label = label_match.group(1) if label_match else "?"
-    if not dynamic_match:
+    # Field names/format confirmed live (2026-09-16): a right-aligned "key : value"
+    # table using the same raw field names as the REST content dict (lowercase,
+    # underscored) - not human-prose labels like "Dynamic captain:".
+    fields = parse_captain(output)
+    captain_label = fields.get("label", "?")
+    dynamic_raw = fields.get("dynamic_captain")
+    if dynamic_raw is None:
         print(yellow(f"  ?     captain={captain_label}  could not find a 'dynamic_captain :' line "
                      "in the output - verify shcluster-status's text format against this Splunk "
                      "version (see the raw output below)."))
         print(f"  --- raw output ---\n{output}\n  --- end raw output ---")
         return True  # don't fail the pretest on an unrecognized-but-present response, just flag it
 
-    dynamic = dynamic_match.group(1).lower() in ("1", "true")
+    dynamic = dynamic_raw.lower() in ("1", "true")
     if dynamic:
         print(green(f"  OK    captain={captain_label}  election=dynamic"))
         return True

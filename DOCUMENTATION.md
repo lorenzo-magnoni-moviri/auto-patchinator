@@ -167,19 +167,14 @@ permissions work differently — so there's no direct equivalent of `chmod 600`;
 minimum keep `.env` under your own user profile (not a shared/network drive) and rely
 on the default per-user NTFS permissions there.
 
-**6. Inventory** — nothing to do here. `inventory/hosts.yaml` is the real, git-tracked
-inventory (this team's node list doesn't change month to month, unlike the wave
-Excel) — it's already there from step 2. If it ever needs editing: `notepad
-inventory\hosts.yaml` — see [§7](#7-data-model-reference) for the field reference.
-
-**7. Verify the setup** before touching anything live:
+**6. Verify the setup** before touching anything live:
 
 ```powershell
 auto-patchinator check-connectivity   # confirms SSH to every inventory host
 auto-patchinator run --dry-run        # simulates a full wave, no SSH at all
 ```
 
-**8. Run for real:** drop the month's wave Excel into a `plans\` folder (created next
+**7. Run for real:** drop the month's wave Excel into a `plans\` folder (created next
 to the project, if it doesn't exist yet) and run `auto-patchinator run` — it finds the
 file automatically; see [§5](#5-cli-reference) for every flag.
 

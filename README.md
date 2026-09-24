@@ -34,8 +34,8 @@ step-by-step Windows walkthrough (cloning the repo, the execution-policy fix if
 activation is blocked, and other Windows-specific notes like colors and `.env`
 permissions).
 
-Copy `inventory/hosts.example.yaml` to `inventory/hosts.yaml` and fill in your hosts if
-you haven't already — see `DOCUMENTATION.md` for the field reference.
+`inventory/hosts.yaml` is the real, git-tracked inventory - already there, nothing to
+copy. See `DOCUMENTATION.md` for the field reference if it ever needs editing.
 
 ---
 

@@ -2,9 +2,10 @@
 """Generates a small, fully-synthetic Vulnerability Plan .xlsx for CI.
 
 No dependency on any real wave data - the referenced hostnames (prdmilbbspkfw01,
-prdmilbbmsosh01) come from the checked-in inventory/hosts.example.yaml, so the fixture
-and the example inventory always agree. Real wave Excel files are gitignored (contain
-sensitive scheduling data), so CI can't use one directly - this stands in for one.
+prdmilbbmsosh01) are chosen to match real entries in the checked-in
+inventory/hosts.yaml, so the fixture resolves against the real inventory CI actually
+uses. Real wave Excel files are gitignored (contain sensitive scheduling data), so CI
+can't use one directly - this stands in for one.
 
 Usage: python scripts/gen_ci_fixture.py <output-path.xlsx>
 """

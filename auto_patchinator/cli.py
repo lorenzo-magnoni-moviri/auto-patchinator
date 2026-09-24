@@ -137,8 +137,8 @@ def _resolve_inventory_path(explicit: str | None) -> str:
             raise SystemExit(f"Inventory file not found: {path}")
         raise SystemExit(
             f"No --inventory given and the default '{DEFAULT_INVENTORY_PATH}' does not "
-            f"exist. Pass --inventory explicitly, or create '{DEFAULT_INVENTORY_PATH}' "
-            "(copy from inventory/hosts.example.yaml)."
+            f"exist. It's tracked in git and should already be there - make sure you're "
+            f"running this from the repository root, or pass --inventory explicitly."
         )
     return path
 

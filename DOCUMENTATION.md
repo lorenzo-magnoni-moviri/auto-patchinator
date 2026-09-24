@@ -167,15 +167,10 @@ permissions work differently — so there's no direct equivalent of `chmod 600`;
 minimum keep `.env` under your own user profile (not a shared/network drive) and rely
 on the default per-user NTFS permissions there.
 
-**6. Set up the inventory** (skip if `inventory/hosts.yaml` already exists — it's
-tracked in git and doesn't change month to month):
-
-```powershell
-copy inventory\hosts.example.yaml inventory\hosts.yaml
-notepad inventory\hosts.yaml
-```
-
-See [§7](#7-data-model-reference) for the field reference.
+**6. Inventory** — nothing to do here. `inventory/hosts.yaml` is the real, git-tracked
+inventory (this team's node list doesn't change month to month, unlike the wave
+Excel) — it's already there from step 2. If it ever needs editing: `notepad
+inventory\hosts.yaml` — see [§7](#7-data-model-reference) for the field reference.
 
 **7. Verify the setup** before touching anything live:
 
@@ -223,8 +218,9 @@ Three things need to be in place before a run: the **inventory** (who your hosts
 
 The static, team-maintained source of truth for every host — production *and* test,
 in one file, distinguished by an `environment:` field per host. This file does **not**
-change month to month; only the wave Excel does. Copy `inventory/hosts.example.yaml` to
-get started (the example has the same shape with placeholder/no `pas_gateway`).
+change month to month; only the wave Excel does. It's real data, not a template — this
+team's host estate is fixed, so unlike `.env` there's nothing to "start from"; it's
+tracked in git (no sensitive personal data in it) and already there from a clone.
 
 `--inventory` defaults to `inventory/hosts.yaml` if you don't pass it explicitly.
 
@@ -961,7 +957,7 @@ SSH/PAS layer end-to-end — that's what `--dry-run` and `check-connectivity` ar
 **CI** (`.github/workflows/ci.yml`) runs the whole suite plus a dry-run
 plan-resolution smoke test on every push and pull request: `scripts/gen_ci_fixture.py`
 builds a small, fully-synthetic plan Excel referencing hosts already in the tracked
-`inventory/hosts.example.yaml` (real wave Excels are gitignored, so CI can't use one
+`inventory/hosts.yaml` (real wave Excels are gitignored, so CI can't use one
 directly), then `auto-patchinator run --dry-run` is invoked against it and immediately
 aborted at the confirmation prompt — enough to exercise the whole pipeline
 (parsing → mapping → ordering → host cross-reference → plan building → summary
@@ -1047,7 +1043,7 @@ check `TODO.md` for anything more recent, since this list will drift.
 | `group N has no hosts in the wave mapping` | The Excel host sheet doesn't list any host for that group that also exists in `hosts.yaml` | Check the wave's host sheet and `hosts.yaml` are consistent — a new host may need adding to the inventory |
 | `Could not find the host sheet` / `no sheet named 'Plan'` | The workbook doesn't match the expected format - no sheet named `Plan`, or the host-listing sheet name doesn't contain `"NO IT"` | Fix the wave Excel to use the expected sheet names (see §4.3) - there's no CLI override for either sheet name |
 | Resumed run keeps re-showing steps you thought were done | Actions are only "done" once marked `SUCCESS` or `SKIPPED` — a step interrupted mid-action stays pending | Expected; the point of resume is exactly this — nothing is assumed done that wasn't recorded as such |
-| Inventory file not found | `--inventory` omitted and `inventory/hosts.yaml` doesn't exist yet | Copy from `inventory/hosts.example.yaml` |
+| Inventory file not found | `--inventory` omitted and `inventory/hosts.yaml` doesn't exist yet | It's tracked in git and should already be there — run from the repository root, or pass `--inventory` explicitly |
 
 ---
 
@@ -1082,7 +1078,6 @@ auto_patchinator/
 
 inventory/
   hosts.yaml                   real inventory (tracked in git — no sensitive personal data)
-  hosts.example.yaml           template to copy from
 
 scripts/
   gen_ci_fixture.py            generates the synthetic Excel used by CI

@@ -28,5 +28,5 @@ jobs:
         run: |
           echo n | auto-patchinator run \
             --excel ci_fixture.xlsx \
-            --inventory inventory/hosts.example.yaml \
+            --inventory inventory/hosts.yaml \
             --dry-run

@@ -24,6 +24,19 @@ Open items, roughly in priority order.
   re-prompting; automatic mode shows an animated "..." while an action runs.
 - [x] Full DEBUG audit logging to `logs/run-<id>.log` (SSH send/receive, operator
   choices, passwords redacted).
+- [x] **Dropped `inventory/hosts.example.yaml`** (2026-09-24, operator feedback: "host
+  will always be the same there's no need for an hosts.example.yaml") — unlike `.env`,
+  there's only ever one real inventory for this team's fixed estate, and `hosts.yaml`
+  itself is already tracked in git (no sensitive personal data in it) and present from
+  a clone, so a separate "template to copy from" was pure redundancy - and had already
+  drifted stale (old `idx`→`ix` hostname rename, missing the `test` environment
+  entries, missing the top-level `environments:` block). Removed the file and every
+  reference to it: `cli.py`'s missing-inventory error message and its test
+  (`tests/test_cli_defaults.py`), `scripts/gen_ci_fixture.py`'s docstring, and
+  `.github/workflows/ci.yml`'s `--inventory` flag - **which was still pointing at the
+  file being deleted**, so this would have silently broken CI if missed. `README.md`/
+  `DOCUMENTATION.md` updated to match (inventory setup is now "already there, nothing
+  to do" rather than a copy step).
 - [x] **Windows installation instructions expanded into a full step-by-step walkthrough**
   (2026-09-24) — `DOCUMENTATION.md`'s §3 Windows subsection (renamed "Installing on
   native Windows") used to explain *why* the tool works identically on Windows without
@@ -134,8 +147,10 @@ Open items, roughly in priority order.
   instead of needing their own credential plumbing.
 - [x] **GitHub Actions CI** — `.github/workflows/ci.yml` runs `python -m pytest` plus a
   dry-run plan-resolution smoke test (`scripts/gen_ci_fixture.py` builds a synthetic,
-  non-sensitive plan Excel referencing `inventory/hosts.example.yaml` hosts, since real
-  wave Excels are gitignored) on every push and pull request.
+  non-sensitive plan Excel referencing `inventory/hosts.yaml` hosts, since real wave
+  Excels are gitignored) on every push and pull request. (2026-09-24: originally
+  pointed at a separate `inventory/hosts.example.yaml` - removed, see "Dropped
+  `inventory/hosts.example.yaml`" above - now points at the real inventory directly.)
 - [x] **Branch protection on `main`** — PR + passing `test` status check now required
   before merge, configured in GitHub repo settings.
 - [x] **Manual guide batches identical hosts** — patching a whole group (e.g. 5 search

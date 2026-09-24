@@ -34,7 +34,7 @@ def test_resolve_inventory_falls_back_to_default(tmp_path, monkeypatch):
 
 def test_resolve_inventory_missing_default_raises_actionable_error(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    with pytest.raises(SystemExit, match="hosts.example.yaml"):
+    with pytest.raises(SystemExit, match="repository root"):
         _resolve_inventory_path(None)
 
 

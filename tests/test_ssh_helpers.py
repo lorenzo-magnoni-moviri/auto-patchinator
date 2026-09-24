@@ -1,3 +1,6 @@
+import paramiko
+import pytest
+
 from auto_patchinator.actions.sequences import NodeRole
 from auto_patchinator.actions.types import Identity
 from auto_patchinator.executor.credentials import Credentials
@@ -7,6 +10,9 @@ from auto_patchinator.executor.ssh import (
     PROMPT_MARKER,
     CommandResult,
     SSHConnection,
+    _CONNECT_RETRIES,
+    _connect_retry_delay,
+    _is_transient_connect_error,
     login_username,
     su_command,
 )
@@ -119,3 +125,78 @@ def test_run_plain_with_secret_also_redacts_the_ptys_echo_of_the_secret():
     non_sensitive_sends = [text for text, sensitive in fake_session.sends if not sensitive]
     assert all("hunter2" not in text for text in non_sensitive_sends)  # never in a logged send
     assert any("$AP_SECRET" in text for text in non_sensitive_sends)  # the command references it by name
+
+
+class _FakeHostKey:
+    def get_name(self):
+        return "ssh-rsa"
+
+    def get_fingerprint(self):
+        return b"abc"
+
+    def get_base64(self):
+        return "AAAA"
+
+
+def test_is_transient_connect_error_retries_ssh_exceptions_and_os_errors():
+    # Real error text observed live against the PAS gateway under concurrent connects
+    # (2026-09-24) - worth retrying, not a dead end.
+    assert _is_transient_connect_error(paramiko.SSHException("Error reading SSH protocol banner"))
+    assert _is_transient_connect_error(ConnectionResetError("[Errno 104] Connection reset by peer"))
+    assert _is_transient_connect_error(EOFError())
+    assert _is_transient_connect_error(TimeoutError())
+
+
+def test_is_transient_connect_error_does_not_retry_auth_failures():
+    # Retrying a wrong password or a rejected host key can't fix it - fail fast
+    # instead of burning the whole backoff schedule first.
+    assert not _is_transient_connect_error(paramiko.AuthenticationException("bad password"))
+    assert not _is_transient_connect_error(
+        paramiko.BadHostKeyException("host01", _FakeHostKey(), _FakeHostKey())
+    )
+
+
+def test_connect_retry_delay_grows_and_is_capped_with_jitter():
+    # attempt 1 -> base 2s, attempt 4 -> base 16s, attempt 10 -> capped at 20s max;
+    # +/-30% jitter applied around each base.
+    assert 2.0 * 0.7 <= _connect_retry_delay(1) <= 2.0 * 1.3
+    assert 16.0 * 0.7 <= _connect_retry_delay(4) <= 16.0 * 1.3
+    assert 20.0 * 0.7 <= _connect_retry_delay(10) <= 20.0 * 1.3
+
+
+def test_connect_retries_transient_errors_then_raises_after_exhausting_attempts(monkeypatch):
+    calls = []
+
+    def _always_reset(client, target, port, username, password):
+        calls.append(1)
+        raise paramiko.SSHException("Error reading SSH protocol banner[Errno 104] Connection reset by peer")
+
+    sleeps = []
+    monkeypatch.setattr("auto_patchinator.executor.ssh._paramiko_connect", _always_reset)
+    monkeypatch.setattr("auto_patchinator.executor.ssh.time.sleep", lambda s: sleeps.append(s))
+
+    conn = SSHConnection("host01", Identity.SPLUNK, NodeRole.DEPLOYER, Credentials("u", "p"))
+    with pytest.raises(paramiko.SSHException):
+        conn.connect()
+
+    assert len(calls) == _CONNECT_RETRIES
+    assert len(sleeps) == _CONNECT_RETRIES - 1  # no sleep before the first attempt
+
+
+def test_connect_fails_fast_on_authentication_error_without_retrying(monkeypatch):
+    calls = []
+
+    def _bad_password(client, target, port, username, password):
+        calls.append(1)
+        raise paramiko.AuthenticationException("bad password")
+
+    sleeps = []
+    monkeypatch.setattr("auto_patchinator.executor.ssh._paramiko_connect", _bad_password)
+    monkeypatch.setattr("auto_patchinator.executor.ssh.time.sleep", lambda s: sleeps.append(s))
+
+    conn = SSHConnection("host01", Identity.SPLUNK, NodeRole.DEPLOYER, Credentials("u", "wrong"))
+    with pytest.raises(paramiko.AuthenticationException):
+        conn.connect()
+
+    assert len(calls) == 1  # no retries - a wrong password won't fix itself
+    assert sleeps == []

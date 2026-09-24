@@ -24,6 +24,22 @@ Open items, roughly in priority order.
   re-prompting; automatic mode shows an animated "..." while an action runs.
 - [x] Full DEBUG audit logging to `logs/run-<id>.log` (SSH send/receive, operator
   choices, passwords redacted).
+- [x] **Stronger SSH connect retry: exponential backoff + jitter, fail-fast on auth
+  errors** (2026-09-24) — found live: frequent `Error reading SSH protocol
+  banner...[Errno 104] Connection reset by peer` errors, most likely the PAS gateway
+  resetting some handshakes when several land at once (`--max-parallel-hosts` defaults
+  to 3, and `CAPTAIN_TRANSFER`/`CAPTAIN_REVERT` open several ad-hoc connections
+  concurrently on top of that). The existing retry in `SSHConnection.connect()`
+  (`executor/ssh.py`) was only 2 attempts with a flat 3s delay - not enough headroom,
+  and with no jitter, hosts that failed together in the same burst would retry in
+  lockstep and could hit the gateway together again. Now: `_CONNECT_RETRIES` = 5,
+  `_connect_retry_delay()` gives exponential backoff (2s/4s/8s/16s, capped at 20s)
+  with ±30% jitter so concurrent hosts desynchronize on retry. Also narrower than
+  before: `_is_transient_connect_error()` only retries connection-level flakiness
+  (`paramiko.SSHException`/`OSError`/`EOFError`) - a wrong password or rejected host
+  key (`AuthenticationException`/`BadHostKeyException`) fails on the first attempt
+  instead of burning the whole backoff schedule before telling the operator their
+  credentials are wrong. 6 new tests in `tests/test_ssh_helpers.py`.
 - [x] **`.env` completeness check, run before any plan/Excel work** (2026-09-24) — found
   live: `.env` had gone missing from this machine entirely (not a code change - just
   discovered mid-session), and today's pretest log

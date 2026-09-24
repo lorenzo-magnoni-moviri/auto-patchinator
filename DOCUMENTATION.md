@@ -688,9 +688,12 @@ mid-SSH.
 Default is `3` - within the conservative starting range this section used to recommend
 testing manually before the default was raised. The PAS/CyberArk gateway's tolerance for
 concurrent sessions from one account still isn't formally established beyond that -
-`executor/ssh.py`'s connect-retry delay is already tuned around gateway-side
-rate-limiting, and repeated connectivity testing has previously looked like it triggered
-an account's failed-attempt lockout counter (see
+frequent `Error reading SSH protocol banner...Connection reset by peer` errors under
+concurrent connects (2026-09-24, live) suggest the gateway resets some handshakes when
+several land at once; `executor/ssh.py`'s connect retry (§10) was strengthened in
+response (5 attempts, exponential backoff + jitter instead of 2 attempts at a flat
+delay), and repeated connectivity testing has previously looked like it triggered an
+account's failed-attempt lockout counter (see
 [§13](#13-known-issues-and-operational-findings)). Pass `1` to fall back to fully
 sequential, or watch for unexpected auth failures or slow gateway responses before
 pushing `N` higher than 3 on a live wave.
@@ -802,10 +805,21 @@ finished and recovers its exit code:
 ### Connection lifecycle (`SSHConnection.connect()`)
 
 1. Build the PAS login username as above.
-2. Attempt the paramiko-level connection, retrying once (`_CONNECT_RETRIES = 2`, 3s
-   delay) — handles PAS-side rate limiting. `_paramiko_connect` tries password auth
-   first, falls back to keyboard-interactive if the gateway demands it (answering every
-   challenge with the same password).
+2. Attempt the paramiko-level connection, retrying transient failures up to
+   `_CONNECT_RETRIES = 5` times with exponential backoff + jitter (`_connect_retry_delay`:
+   2s/4s/8s/16s, capped at 20s, ±30% jitter) — handles PAS-side rate limiting/connection
+   resets under concurrent load (found live 2026-09-24: frequent `Error reading SSH
+   protocol banner...Connection reset by peer`, likely from several handshakes landing on
+   the gateway at once - `--max-parallel-hosts` defaults to 3, and `CAPTAIN_TRANSFER`/
+   `CAPTAIN_REVERT` open several ad-hoc connections concurrently on top of that; jitter
+   keeps hosts that failed together in the same burst from retrying in lockstep and
+   hitting the gateway together again). Only transient errors are retried
+   (`_is_transient_connect_error`: `paramiko.SSHException`/`OSError`/`EOFError`) - a
+   wrong password or rejected host key (`AuthenticationException`/`BadHostKeyException`)
+   fails on the first attempt instead of working through the whole backoff schedule
+   first. `_paramiko_connect` tries password auth first, falls back to
+   keyboard-interactive if the gateway demands it (answering every challenge with the
+   same password).
 3. Once authenticated, `invoke_shell()` and read until either a normal shell prompt
    (`[#$>]\s*$`) **or** a forced password-change banner appears (`PASSWORD_EXPIRED_PATTERN`
    — matches `"password has expired"` / `"changing password for"`). If the latter, raise

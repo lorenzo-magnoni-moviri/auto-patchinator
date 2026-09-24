@@ -19,6 +19,7 @@ command has finished and to recover its exit code.
 from __future__ import annotations
 
 import logging
+import random
 import re
 import shlex
 import time
@@ -53,8 +54,18 @@ PASSWORD_EXPIRED_PATTERN = re.compile(r"password has expired|changing password f
 PROMPT_MARKER = "<<AP_READY>>"
 EXIT_MARKER = "AP_EXIT_CODE"
 
-_CONNECT_RETRIES = 2
-_CONNECT_RETRY_DELAY = 3.0  # seconds between retries (handles PAS rate-limiting)
+_CONNECT_RETRIES = 5
+# Exponential backoff (2s, 4s, 8s, 16s, capped at _CONNECT_RETRY_MAX_DELAY) plus +/-30%
+# jitter between attempts. Found live (2026-09-24): frequent "Error reading SSH
+# protocol banner...Connection reset by peer" under concurrent connects
+# (--max-parallel-hosts defaults to 3, and CAPTAIN_TRANSFER/REVERT open several ad-hoc
+# connections at once) - the PAS gateway appears to reset some connections when several
+# handshakes land at once. A short fixed delay (previously 2 attempts, flat 3s) wasn't
+# enough headroom, and without jitter, hosts that failed in the same burst would all
+# retry in lockstep and could hit the gateway together again. Jitter spreads retries
+# out so concurrent hosts don't resynchronize.
+_CONNECT_RETRY_BASE_DELAY = 2.0  # seconds
+_CONNECT_RETRY_MAX_DELAY = 20.0  # seconds
 
 
 def login_username(
@@ -135,6 +146,27 @@ class _ShellSession:
             self._label, timeout, pattern, buffer_repr,
         )
         raise TimeoutReadingShell(f"timed out waiting for {pattern!r}; buffer so far: {buffer_repr}")
+
+
+def _is_transient_connect_error(exc: Exception) -> bool:
+    """True for connection-level flakiness worth retrying (the PAS gateway resetting
+    a handshake mid-banner, a timeout, a dropped socket). False for anything a retry
+    can't fix - a rejected password or host key - so connect() fails fast on those
+    instead of burning the full backoff schedule before telling the operator their
+    credentials are wrong."""
+    import paramiko
+
+    if isinstance(exc, (paramiko.AuthenticationException, paramiko.BadHostKeyException)):
+        return False
+    return isinstance(exc, (paramiko.SSHException, OSError, EOFError))
+
+
+def _connect_retry_delay(attempt: int) -> float:
+    """Delay before retry attempt `attempt` (1-indexed) - exponential backoff capped
+    at _CONNECT_RETRY_MAX_DELAY, with +/-30% jitter so concurrent hosts retrying after
+    the same failed burst don't resynchronize and hit the gateway together again."""
+    base = min(_CONNECT_RETRY_BASE_DELAY * (2 ** (attempt - 1)), _CONNECT_RETRY_MAX_DELAY)
+    return base * random.uniform(0.7, 1.3)
 
 
 def _paramiko_connect(client, target: str, port: int, username: str, password: str) -> None:
@@ -222,8 +254,12 @@ class SSHConnection:
         last_exc: Exception | None = None
         for attempt in range(_CONNECT_RETRIES):
             if attempt > 0:
-                _log.info("%s retrying connect (attempt %d) after: %s", label, attempt + 1, last_exc)
-                time.sleep(_CONNECT_RETRY_DELAY)
+                delay = _connect_retry_delay(attempt)
+                _log.info(
+                    "%s retrying connect (attempt %d) in %.1fs after: %s",
+                    label, attempt + 1, delay, last_exc,
+                )
+                time.sleep(delay)
             try:
                 client = paramiko.SSHClient()
                 client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -233,6 +269,8 @@ class SSHConnection:
             except Exception as exc:
                 last_exc = exc
                 client = None
+                if not _is_transient_connect_error(exc):
+                    break  # retrying won't help (e.g. bad password) - fail fast
 
         if last_exc is not None:
             _log.error("%s connect failed after %d attempt(s): %s", label, _CONNECT_RETRIES, last_exc)

@@ -19,6 +19,7 @@ to this machine."""
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -184,6 +185,12 @@ def ensure_env_credentials_complete(env_path: str | Path = ".env") -> None:
 
     missing = [name for name in ENV_CREDENTIAL_FIELDS if not os.environ.get(name, "").strip()]
     if not missing:
+        return
+
+    if not sys.stdin.isatty():
+        # No operator to prompt (piped/non-interactive stdin) - skip rather than
+        # crash with EOFError once input() runs out of data. Callers already degrade
+        # gracefully when these stay unset (prompt_credentials()/load_*_credentials()).
         return
 
     print(f"\n.env is missing: {', '.join(missing)}")

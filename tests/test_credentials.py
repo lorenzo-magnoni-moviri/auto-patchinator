@@ -89,8 +89,17 @@ def test_streamsets_repr_never_leaks_secrets():
     assert "admin" in rendered
 
 
+def _force_tty(monkeypatch):
+    # ensure_env_credentials_complete() skips prompting entirely when stdin isn't a
+    # tty (CI, piped input) rather than crashing with EOFError once input() runs out
+    # of data - see test_ensure_env_credentials_complete_skips_when_stdin_is_not_a_tty.
+    # Tests that exercise the actual prompting need to simulate an interactive session.
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+
 def test_ensure_env_credentials_complete_prompts_and_writes_missing_fields(monkeypatch, tmp_path):
     _clear_env(monkeypatch)
+    _force_tty(monkeypatch)
     answers = iter(["alice", "alicepw", "splunkuser", "splunkpw", "streamsetsuser", "streamsetspw"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
@@ -131,6 +140,7 @@ def test_ensure_env_credentials_complete_skips_prompting_when_all_set(monkeypatc
 
 def test_ensure_env_credentials_complete_only_prompts_for_missing_ones(monkeypatch, tmp_path):
     _clear_env(monkeypatch)
+    _force_tty(monkeypatch)
     monkeypatch.setenv("AP_USERNAME", "alice")
     monkeypatch.setenv("AP_PASSWORD", "alicepw")
 
@@ -167,6 +177,7 @@ def test_ensure_env_credentials_complete_prompt_hints_ap_username_and_splunk_api
 
 def test_ensure_env_credentials_complete_blank_input_is_skipped(monkeypatch, tmp_path):
     _clear_env(monkeypatch)
+    _force_tty(monkeypatch)
     # SPLUNK_API_USER has a default ("admin") so blank resolves to that; the other
     # fields have no default, so blank there leaves them unset.
     answers = iter(["alice", "alicepw", "", "", "", ""])
@@ -195,6 +206,7 @@ def test_ensure_env_credentials_complete_blank_input_is_skipped(monkeypatch, tmp
 
 def test_ensure_env_credentials_complete_splunk_api_user_defaults_to_admin_on_blank(monkeypatch, tmp_path):
     _clear_env(monkeypatch)
+    _force_tty(monkeypatch)
     monkeypatch.setenv("AP_USERNAME", "alice")
     monkeypatch.setenv("AP_PASSWORD", "alicepw")
     monkeypatch.setenv("SPLUNK_API_PASSWORD", "splunkpw")
@@ -207,6 +219,27 @@ def test_ensure_env_credentials_complete_splunk_api_user_defaults_to_admin_on_bl
 
     assert os.environ["SPLUNK_API_USER"] == "admin"
     assert "SPLUNK_API_USER=admin" in env_path.read_text()
+
+
+def test_ensure_env_credentials_complete_skips_when_stdin_is_not_a_tty(monkeypatch, tmp_path):
+    # Found live (2026-09-24): CI's --dry-run smoke test has no .env and pipes a
+    # single canned answer to stdin - the old unconditional prompting loop consumed
+    # that answer on its first field, then crashed with EOFError once stdin ran out.
+    # No operator to prompt in a non-interactive context, so this must skip silently
+    # rather than call input() at all.
+    _clear_env(monkeypatch)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+    def _boom(prompt=""):
+        raise AssertionError("input() should not be called when stdin isn't a tty")
+
+    monkeypatch.setattr("builtins.input", _boom)
+
+    env_path = tmp_path / ".env"
+    ensure_env_credentials_complete(env_path)  # must not raise EOFError
+
+    assert "AP_USERNAME" not in os.environ
+    assert not env_path.exists()
 
 
 def test_write_env_values_updates_existing_and_preserves_comments(tmp_path):

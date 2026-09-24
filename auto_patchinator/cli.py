@@ -227,8 +227,16 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     # Before even considering the wave Excel: .env is meant to be a stable, complete
     # local config (unlike the plan, which changes every run) - get it there up front
-    # rather than letting each feature independently discover a gap mid-run.
-    ensure_env_credentials_complete()
+    # rather than letting each feature independently discover a gap mid-run. Skipped
+    # for --dry-run, same as every other credential-touching step (prompt_credentials(),
+    # the pretest) - --dry-run's whole point is "no SSH at all", and it shouldn't
+    # prompt for or need credentials either. Found live (2026-09-24): CI's --dry-run
+    # smoke test has no .env and pipes a single canned answer to stdin for the "Proceed
+    # with this plan?" prompt - this call used to run unconditionally before that
+    # branch, so it consumed the piped answer on its first credential prompt and then
+    # crashed with EOFError once stdin ran out.
+    if not args.dry_run:
+        ensure_env_credentials_complete()
 
     args.excel = args.excel or _prompt_for_excel_path()
     args.inventory = _resolve_inventory_path(args.inventory)

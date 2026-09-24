@@ -24,6 +24,26 @@ Open items, roughly in priority order.
   re-prompting; automatic mode shows an animated "..." while an action runs.
 - [x] Full DEBUG audit logging to `logs/run-<id>.log` (SSH send/receive, operator
   choices, passwords redacted).
+- [x] **Fixed: CI's `--dry-run` smoke test crashed with `EOFError`** (2026-09-24, found
+  from the actual CI failure notification for commit `54c8c42`). Root cause: the `.env`
+  completeness check (`ensure_env_credentials_complete()`, added earlier the same day -
+  see below) ran unconditionally at the very top of `cmd_run`, before the `--dry-run`
+  branch even existed. CI's fresh checkout has no `.env` and pipes a single `n` to
+  stdin for the "Proceed with this plan?" prompt; the credentials check consumed that
+  `n` as its first field's answer, then called `input()` again for the next field with
+  stdin already exhausted, raising an unhandled `EOFError`. Two fixes, both belt-and-
+  suspenders: (1) `cli.py:cmd_run` now only calls `ensure_env_credentials_complete()`
+  when `not args.dry_run` - matches every other credential-touching step
+  (`prompt_credentials()`, the pretest), since `--dry-run`'s whole point is "no SSH at
+  all" and it shouldn't need or prompt for credentials either; (2)
+  `ensure_env_credentials_complete()` itself now checks `sys.stdin.isatty()` and skips
+  silently (no prompt, no crash) whenever stdin isn't interactive, so *any* future
+  non-interactive invocation degrades gracefully instead of hitting the same `EOFError`
+  class of bug. Reproduced locally first (temporarily moving `.env` aside and clearing
+  the credential env vars, then running the exact CI command) to confirm the crash,
+  then again after the fix to confirm a clean exit. 1 new test in
+  `tests/test_credentials.py` (20 total); `.github/workflows/ci.yml` itself needed no
+  change.
 - [x] **Dropped `inventory/hosts.example.yaml`** (2026-09-24, operator feedback: "host
   will always be the same there's no need for an hosts.example.yaml") — unlike `.env`,
   there's only ever one real inventory for this team's fixed estate, and `hosts.yaml`

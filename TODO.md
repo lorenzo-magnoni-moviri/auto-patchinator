@@ -24,6 +24,26 @@ Open items, roughly in priority order.
   re-prompting; automatic mode shows an animated "..." while an action runs.
 - [x] Full DEBUG audit logging to `logs/run-<id>.log` (SSH send/receive, operator
   choices, passwords redacted).
+- [x] **Verbose per-host progress for `CAPTAIN_TRANSFER`/`CAPTAIN_REVERT` in automatic
+  mode** (2026-09-24, operator feedback after the live transfer test: the terse
+  `"[group] transfer captain static ... DONE"` line every other automatic-mode action
+  gets wasn't enough for a multi-minute, multi-host conf change - especially coming
+  right after the earlier live-test confusion over what looked like a stalled/
+  incomplete transfer). Both actions now print their own progress as they go:
+  `_print_captain_progress` (new small helper, `_console_lock`-held) prints a line for
+  each phase - setting the captain, re-enabling election, bootstrapping - and
+  `_run_captain_config_command` (shared by both actions' "every other member" step)
+  now prints a per-host `[hostname] OK`/`FAILED` line as each one completes, from
+  inside its worker thread. The poll loop for both actions now prints every attempt
+  (elapsed time + the raw `label`/`dynamic_captain` fields) instead of only logging it
+  at DEBUG level - directly answers "is this actually still working or stuck?" without
+  needing to tail the log file. `_handle_action_auto` forces `animate=False` for these
+  two action kinds specifically, since the extra print lines would otherwise collide
+  with the single-line dot-spinner's in-place `\r` redraw (same static-line/heartbeat
+  path concurrent per-host actions already use). Verified via existing
+  `tests/test_controller_captain.py` fixtures run with `pytest -s` (output capture
+  off) to see the actual formatting - no test changes needed, output didn't affect any
+  assertion.
 - [x] **Fixed: CI's `--dry-run` smoke test crashed with `EOFError`** (2026-09-24, found
   from the actual CI failure notification for commit `54c8c42`). Root cause: the `.env`
   completeness check (`ensure_env_credentials_complete()`, added earlier the same day -
@@ -480,8 +500,9 @@ Open items, roughly in priority order.
   restart, revert after" detail from the original sketch (never confirmed with the
   operator, not built).
 
-- [x] **Automate SH captain transfer / revert - built, not yet live-tested**
-  (2026-09-22). `transfer_captain_static`/`revert_captain_dynamic`
+- [x] **Automate SH captain transfer / revert - transfer half live-verified,
+  revert still pending** (2026-09-22, transfer live-tested 2026-09-24).
+  `transfer_captain_static`/`revert_captain_dynamic`
   (`actions/sequences.py`) now build real `ActionKind.CAPTAIN_TRANSFER`/
   `CAPTAIN_REVERT` actions instead of `manual_todo` placeholders, executed by
   `RunController._execute_captain_transfer`/`_execute_captain_revert`
@@ -517,8 +538,28 @@ Open items, roughly in priority order.
     finding was really about the unrelated Milano `mso` cluster incident, which has
     no transfer mechanism at all and is out of scope here.
   - Dry-run verified against the real prod wave: resolves to the correct temporary
-    captain and the correct 10-host cluster list. **Not yet exercised live** - the
-    operator wants the transfer half tested live first, revert after.
+    captain and the correct 10-host cluster list.
+  - **Transfer live-tested against real production 2026-09-24**: ran the actual
+    `captain_transfer_static` action (through the real `RunController._execute` path,
+    same code a real wave uses) against the live 10-host stretched-SH cluster.
+    Reported `SUCCESS` - `prdmilbbspksh01` (Milano, untouched site) confirmed as
+    static captain with `dynamic_captain=0`. Follow-up read-only checks (per-host
+    `shcluster-status`, not just the captain's own poll) found every one of the 10
+    hosts individually confirmed pointing at the new captain immediately - but the
+    *captain's own aggregated `Members:` list* only showed 8/10, then 9/10 a couple
+    minutes later, before reaching 10/10 - real heartbeat/check-in lag after a
+    captain change, not a failure; worth remembering if a future transfer looks
+    "incomplete" right after running; give it a minute and re-check by aggregated
+    member count, not just the captain-confirmation poll's own success flag (which
+    only checks the captain host's own view, not full membership). One host
+    (`prdmilbbspksh05`) briefly showed `service_ready_flag=0` when the others showed
+    `1` - not investigated further since it self-resolved, but worth watching for on
+    a future run. **Revert not yet tested** - explicit operator decision (2026-09-24)
+    to leave the cluster on the static captain and hold off on reverting for now
+    ("don't proceed to dynamic captain"), not a technical blocker. `.env` and the
+    credentials needed are still in place, so `captain_revert_live.py`
+    (not checked into git - ad hoc scratch script) is ready to run whenever the
+    operator gives the go-ahead; nothing else needs preparing.
 
 - [x] **Cluster status validation via Splunk API - search head side done** (2026-09-16).
   Indexer cluster (poll `GET /services/cluster/master/peers`/S&R factor) is still open -

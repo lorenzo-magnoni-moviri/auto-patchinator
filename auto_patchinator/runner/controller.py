@@ -808,7 +808,13 @@ class RunController:
     def _handle_action_auto(self, scope: str, action: Action, action_state: ActionState) -> str:
         if self._is_forced_manual(scope, action):
             return self._confirm_manual_auto(scope, action, action_state)
-        return self._attempt_with_retry(scope, action, action_state, auto=True)
+        # CAPTAIN_TRANSFER/CAPTAIN_REVERT print their own per-host progress as they go
+        # (_print_captain_progress) - the single-line dot-spinner assumes it owns the
+        # terminal's last line via in-place \r redraw, which those extra lines would
+        # break, so route through the static-line/heartbeat path instead, same as
+        # concurrent per-host actions already do.
+        animate = action.kind not in (ActionKind.CAPTAIN_TRANSFER, ActionKind.CAPTAIN_REVERT)
+        return self._attempt_with_retry(scope, action, action_state, auto=True, animate=animate)
 
     def _confirm_manual_auto(self, scope: str, action: Action, action_state: ActionState) -> str:
         # Held for the whole prompt (not just the prints) so two hosts hitting a forced-
@@ -1304,17 +1310,26 @@ class RunController:
         closes. Used for the "every other member" step of both CAPTAIN_TRANSFER and
         CAPTAIN_REVERT - one call per host, run concurrently via a ThreadPoolExecutor
         (max_workers=self._max_parallel_hosts, the same PAS-gateway-tolerance dial
-        used everywhere else concurrency happens in this tool)."""
+        used everywhere else concurrency happens in this tool). Prints its own
+        per-host OK/FAILED line as it completes (console_lock-held, safe from worker
+        threads) - the automatic-mode "DONE" summary alone was too little visibility
+        into what a multi-host conf change is actually doing while it's in flight."""
         role = self._inventory.get(hostname).role
         connection = self._connection_factory(hostname=hostname, identity=Identity.SPLUNK, role=role)
         try:
             connection.connect()
             result = connection.run_plain_with_secret(command, secret, timeout=60)
-            return hostname, result.success, ("ok" if result.success else result.output)
+            success, detail = result.success, ("ok" if result.success else result.output)
         except Exception as exc:  # noqa: BLE001 - surfaced to the operator, not swallowed
-            return hostname, False, str(exc)
+            success, detail = False, str(exc)
         finally:
             connection.close()
+        with self._console_lock:
+            if success:
+                print(f"      [{hostname}] {green('OK')}")
+            else:
+                print(f"      [{hostname}] {red('FAILED')}: {detail}")
+        return hostname, success, detail
 
     def _run_captain_config_on_other_members(self, action: Action, command: str, secret: str) -> list[str]:
         """Runs `command` concurrently on every host in action.cluster_hostnames
@@ -1333,6 +1348,15 @@ class RunController:
                 if not success:
                     failures.append(f"{hostname}: {detail}")
         return failures
+
+    def _print_captain_progress(self, message: str, ok: bool = True) -> None:
+        """Prints one line of CAPTAIN_TRANSFER/CAPTAIN_REVERT progress (setting the
+        captain, each member pointed at it, each poll attempt) - the automatic-mode
+        "DONE" summary alone was too little visibility into what a multi-host conf
+        change spanning several minutes is actually doing while it's in flight.
+        console_lock-held, same as every other print during automatic mode."""
+        with self._console_lock:
+            print(f"    {message}" if ok else f"    {red(message)}")
 
     def _execute_captain_transfer(
         self, scope: str, action: Action, action_state: ActionState, quiet: bool, ok_prefix: str
@@ -1364,8 +1388,10 @@ class RunController:
         splunk_bin = splunk_bin_for(role)
         connection = self._connection_factory(hostname=captain_host, identity=Identity.SPLUNK, role=role)
         creds = self._splunk_api_credentials
+        other_member_count = len(action.cluster_hostnames or ()) - 1
         try:
             connection.connect()
+            self._print_captain_progress(f"[{captain_host}] setting as static captain...")
             become_captain_cmd = (
                 f"{splunk_bin} edit shcluster-config -mode captain "
                 f'-captain_uri https://{captain_host}.sky.local:8089 -election false '
@@ -1373,9 +1399,12 @@ class RunController:
             )
             result = connection.run_plain_with_secret(become_captain_cmd, creds.password, timeout=60)
             if not result.success:
+                self._print_captain_progress(f"[{captain_host}] FAILED", ok=False)
                 action_state.status = ActionStatus.FAILED
                 action_state.error = f"setting {captain_host} as static captain failed: {result.output}"
             else:
+                self._print_captain_progress(f"[{captain_host}] OK")
+                self._print_captain_progress(f"pointing {other_member_count} other member(s) at the new captain...")
                 become_member_cmd = (
                     f"{splunk_bin} edit shcluster-config -mode member "
                     f'-captain_uri https://{captain_host}.sky.local:8089 -election false '
@@ -1389,10 +1418,12 @@ class RunController:
                         + "; ".join(failures)
                     )
                 else:
+                    self._print_captain_progress("waiting for the cluster to confirm the static captain...")
                     status_command = (
                         f'{splunk_bin} show shcluster-status --verbose -auth "{creds.username}:$AP_SECRET"'
                     )
-                    deadline = time.monotonic() + action.timeout_seconds
+                    poll_start = time.monotonic()
+                    deadline = poll_start + action.timeout_seconds
                     description = "no poll attempt completed"
                     while True:
                         result = connection.run_plain_with_secret(status_command, creds.password, timeout=30)
@@ -1403,6 +1434,8 @@ class RunController:
                         description = (
                             f"label={label!r}  dynamic_captain={fields.get('dynamic_captain', '<missing>')!r}"
                         )
+                        elapsed = time.monotonic() - poll_start
+                        self._print_captain_progress(f"poll ({elapsed:.0f}s): {description}")
                         _log.debug(
                             "captain_transfer poll %s: captain_confirmed=%s static=%s %s",
                             action.name, is_captain, is_static, description,
@@ -1472,6 +1505,9 @@ class RunController:
         other_members = [h for h in action.cluster_hostnames if h != captain_host]
         failures = []
         if other_members:
+            self._print_captain_progress(
+                f"re-enabling dynamic election on {len(other_members)} other member(s)..."
+            )
             with ThreadPoolExecutor(max_workers=self._max_parallel_hosts) as pool:
                 futures = {
                     pool.submit(self._run_captain_config_command, h, election_true_cmd_for(h), creds.password): h
@@ -1494,13 +1530,17 @@ class RunController:
         connection = self._connection_factory(hostname=captain_host, identity=Identity.SPLUNK, role=role)
         try:
             connection.connect()
+            self._print_captain_progress(f"[{captain_host}] re-enabling dynamic election on itself...")
             result = connection.run_plain_with_secret(election_true_cmd_for(captain_host), creds.password, timeout=60)
             if not result.success:
+                self._print_captain_progress(f"[{captain_host}] FAILED", ok=False)
                 action_state.status = ActionStatus.FAILED
                 action_state.error = (
                     f"re-enabling dynamic election on {captain_host} itself failed: {result.output}"
                 )
             else:
+                self._print_captain_progress(f"[{captain_host}] OK")
+                self._print_captain_progress(f"bootstrapping shcluster-captain from {captain_host}...")
                 servers_list = ",".join(f"https://{h}.sky.local:8089" for h in sorted(action.cluster_hostnames))
                 bootstrap_cmd = (
                     f'{splunk_bin} bootstrap shcluster-captain -servers_list "{servers_list}" '
@@ -1508,13 +1548,16 @@ class RunController:
                 )
                 result = connection.run_plain_with_secret(bootstrap_cmd, creds.password, timeout=60)
                 if not result.success:
+                    self._print_captain_progress("bootstrap FAILED", ok=False)
                     action_state.status = ActionStatus.FAILED
                     action_state.error = f"bootstrap shcluster-captain from {captain_host} failed"
                 else:
+                    self._print_captain_progress("bootstrap OK - waiting for a dynamic captain to be confirmed...")
                     status_command = (
                         f'{splunk_bin} show shcluster-status --verbose -auth "{creds.username}:$AP_SECRET"'
                     )
-                    deadline = time.monotonic() + action.timeout_seconds
+                    poll_start = time.monotonic()
+                    deadline = poll_start + action.timeout_seconds
                     description = "no poll attempt completed"
                     while True:
                         result = connection.run_plain_with_secret(status_command, creds.password, timeout=30)
@@ -1524,6 +1567,8 @@ class RunController:
                             f"label={fields.get('label', '<missing>')!r}  "
                             f"dynamic_captain={fields.get('dynamic_captain', '<missing>')!r}"
                         )
+                        elapsed = time.monotonic() - poll_start
+                        self._print_captain_progress(f"poll ({elapsed:.0f}s): {description}")
                         _log.debug(
                             "captain_revert poll %s: dynamic=%s %s", action.name, is_dynamic, description
                         )

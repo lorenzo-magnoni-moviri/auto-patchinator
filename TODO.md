@@ -24,6 +24,17 @@ Open items, roughly in priority order.
   re-prompting; automatic mode shows an animated "..." while an action runs.
 - [x] Full DEBUG audit logging to `logs/run-<id>.log` (SSH send/receive, operator
   choices, passwords redacted).
+- [x] **Windows installation instructions expanded into a full step-by-step walkthrough**
+  (2026-09-24) — `DOCUMENTATION.md`'s §3 Windows subsection (renamed "Installing on
+  native Windows") used to explain *why* the tool works identically on Windows without
+  actually walking through getting it installed there (assumed Python/git already
+  present, jumped straight to the venv commands). Now numbered end to end: installing
+  Python 3.10+ (with the "Add to PATH" gotcha called out), getting the code
+  (`git clone` or a GitHub ZIP download for operators without git), venv setup, install,
+  credentials (now points at the new `.env` completeness prompt from the previous
+  entry instead of a manual `copy`/edit step), inventory setup, and verifying with
+  `check-connectivity`/`--dry-run` before a live run. `README.md`'s Windows quick-start
+  trimmed to match and pointed at the full walkthrough.
 - [x] **Stronger SSH connect retry: exponential backoff + jitter, fail-fast on auth
   errors** (2026-09-24) — found live: frequent `Error reading SSH protocol
   banner...[Errno 104] Connection reset by peer` errors, most likely the PAS gateway

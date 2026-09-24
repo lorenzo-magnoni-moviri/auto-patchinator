@@ -98,33 +98,99 @@ Requires Python 3.10+. Runtime dependencies: `openpyxl` (Excel), `PyYAML` (inven
 Works from any Linux host or WSL that has network access to the PAS gateway — no agent
 needs to be installed on the target Splunk nodes themselves.
 
-### Running on native Windows (no WSL)
+### Installing on native Windows (no WSL)
 
-If you're on **WSL**, ignore this — it's a real Linux userspace, so everything above
-already works as written.
+If you're on **WSL**, ignore this whole section — it's a real Linux userspace, so the
+commands at the top of [§3](#3-installation) already work as written.
 
-For native Windows (PowerShell/cmd): the tool is pure Python with cross-platform
-dependencies — there is no POSIX-only code anywhere in it (no `pty`/`fcntl`/`termios`,
-no shelling out to Unix tools). Every SSH command it sends is a *string* addressed to
-the remote Linux Splunk hosts (`/opt/splunk/bin/splunk stop`, `sudo su - splunk`, etc.)
-— those paths live on the target servers, not on your machine, so they don't care which
-OS is running the tool. **Functionally, everything behaves identically on native
-Windows.** Only the setup commands differ:
+For native Windows (PowerShell) the tool works identically — it's pure Python with
+cross-platform dependencies, no POSIX-only code anywhere in it (no `pty`/`fcntl`/
+`termios`, no shelling out to Unix tools), and every SSH command it sends is a *string*
+addressed to the remote Linux Splunk hosts (`/opt/splunk/bin/splunk stop`,
+`sudo su - splunk`, etc.) — those paths live on the target servers, not on your
+machine, so they don't care which OS is running the tool. Only the setup steps differ,
+below.
+
+**1. Install Python 3.10 or later.** Get it from
+[python.org/downloads](https://www.python.org/downloads/) (or the Microsoft Store).
+During setup, tick **"Add python.exe to PATH"** on the first install screen — if you
+skip this, `python`/`pip` won't be recognized later and you'll need to re-run the
+installer or fix PATH by hand. Verify it worked in a new PowerShell window:
+
+```powershell
+python --version
+```
+
+**2. Get the code.** Either clone it with Git:
+
+```powershell
+git clone https://github.com/lorenzo-magnoni-moviri/auto-patchinator.git
+cd auto-patchinator
+```
+
+or, if Git isn't installed, download the repo as a ZIP from GitHub (**Code → Download
+ZIP**), extract it, and open a PowerShell prompt in the extracted folder.
+
+**3. Create and activate a virtual environment:**
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install -e .
 ```
 
 If PowerShell blocks the activation script with an execution-policy error, either run
 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` first, or activate via
-`.venv\Scripts\activate.bat` from `cmd.exe` instead.
+`.venv\Scripts\activate.bat` from `cmd.exe` instead. Your prompt should now start with
+`(.venv)`.
 
-**Credentials:** `copy .env.example .env`, then edit it the same way. Windows has no
-`chmod` — NTFS permissions work differently — so there's no direct equivalent of
-`chmod 600`; at minimum keep `.env` under your own user profile (not a shared/network
-drive) and rely on the default per-user NTFS permissions there.
+**4. Install the tool:**
+
+```powershell
+pip install -e .
+pip install -e ".[test]"   # optional - also installs pytest, for running the test suite
+```
+
+**5. Set up credentials.** You don't need to do this by hand — the first time you run
+`auto-patchinator run`, it checks `.env` and interactively prompts for anything
+missing (`AP_USERNAME`/`AP_PASSWORD` and, optionally, the Splunk/StreamSets API
+fields), then saves your answers so you're not asked again. If you'd rather set it up
+up front:
+
+```powershell
+copy .env.example .env
+notepad .env
+```
+
+`AP_USERNAME`/`AP_PASSWORD` are your own day-to-day Splunk/LDAP login. None of this
+tool's prompts mask what you type, on either OS. Windows has no `chmod` — NTFS
+permissions work differently — so there's no direct equivalent of `chmod 600`; at
+minimum keep `.env` under your own user profile (not a shared/network drive) and rely
+on the default per-user NTFS permissions there.
+
+**6. Set up the inventory** (skip if `inventory/hosts.yaml` already exists — it's
+tracked in git and doesn't change month to month):
+
+```powershell
+copy inventory\hosts.example.yaml inventory\hosts.yaml
+notepad inventory\hosts.yaml
+```
+
+See [§7](#7-data-model-reference) for the field reference.
+
+**7. Verify the setup** before touching anything live:
+
+```powershell
+auto-patchinator check-connectivity   # confirms SSH to every inventory host
+auto-patchinator run --dry-run        # simulates a full wave, no SSH at all
+```
+
+**8. Run for real:** drop the month's wave Excel into a `plans\` folder (created next
+to the project, if it doesn't exist yet) and run `auto-patchinator run` — it finds the
+file automatically; see [§5](#5-cli-reference) for every flag.
+
+---
+
+### Notes specific to Windows
 
 **Colors and the animated `...` progress indicator** both auto-disable when stdout
 isn't a real terminal, same as on Linux. On a real terminal, **Windows Terminal** and

@@ -17,22 +17,22 @@ setup, troubleshooting, and known issues. [`TODO.md`](TODO.md) has the live back
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
-
-cp .env.example .env   # fill in AP_USERNAME / AP_PASSWORD, then: chmod 600 .env
 ```
 
-Native Windows (no WSL) — PowerShell:
+Native Windows (no WSL, requires Python 3.10+ from [python.org](https://www.python.org/downloads/)) — PowerShell:
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -e .
-
-copy .env.example .env   # fill in AP_USERNAME / AP_PASSWORD
 ```
 
-See `DOCUMENTATION.md`'s Installation section for the execution-policy fix if
-activation is blocked, and other Windows-specific notes (`.env` permissions, colors).
+`.env` doesn't need setting up by hand on either OS — the first `run` checks it and
+interactively prompts for anything missing (`AP_USERNAME`/`AP_PASSWORD`, etc.), then
+saves your answers. See `DOCUMENTATION.md`'s Installation section for a full
+step-by-step Windows walkthrough (cloning the repo, the execution-policy fix if
+activation is blocked, and other Windows-specific notes like colors and `.env`
+permissions).
 
 Copy `inventory/hosts.example.yaml` to `inventory/hosts.yaml` and fill in your hosts if
 you haven't already — see `DOCUMENTATION.md` for the field reference.

@@ -500,8 +500,8 @@ Open items, roughly in priority order.
   restart, revert after" detail from the original sketch (never confirmed with the
   operator, not built).
 
-- [x] **Automate SH captain transfer / revert - transfer half live-verified,
-  revert still pending** (2026-09-22, transfer live-tested 2026-09-24).
+- [x] **Automate SH captain transfer / revert - both halves live-verified**
+  (2026-09-22, transfer live-tested 2026-09-24, revert live-tested 2026-09-25).
   `transfer_captain_static`/`revert_captain_dynamic`
   (`actions/sequences.py`) now build real `ActionKind.CAPTAIN_TRANSFER`/
   `CAPTAIN_REVERT` actions instead of `manual_todo` placeholders, executed by
@@ -554,12 +554,23 @@ Open items, roughly in priority order.
     only checks the captain host's own view, not full membership). One host
     (`prdmilbbspksh05`) briefly showed `service_ready_flag=0` when the others showed
     `1` - not investigated further since it self-resolved, but worth watching for on
-    a future run. **Revert not yet tested** - explicit operator decision (2026-09-24)
-    to leave the cluster on the static captain and hold off on reverting for now
-    ("don't proceed to dynamic captain"), not a technical blocker. `.env` and the
-    credentials needed are still in place, so `captain_revert_live.py`
-    (not checked into git - ad hoc scratch script) is ready to run whenever the
-    operator gives the go-ahead; nothing else needs preparing.
+    a future run.
+  - **Revert live-tested against real production 2026-09-25**: ran
+    `captain_revert_dynamic` against the same 10-host cluster (still on the static
+    captain from the day before). Reported `SUCCESS` in 53.8s - all 9 other members
+    re-enabled dynamic election, `prdmilbbspksh01` re-enabled it on itself and
+    bootstrapped, dynamic captain confirmed on the very first poll (1s) - much faster
+    than transfer's multi-minute convergence, since revert doesn't need a fresh
+    election to propagate the way transfer's static pointer does. Follow-up per-host
+    check confirmed all 10 hosts agree: `dynamic_captain=1`, same captain label,
+    no split-brain. Same `service_ready_flag=0` transient seen on most hosts right
+    after completion (operator confirmed this is expected/self-resolving, consistent
+    with the transfer test - not investigated further either time). `captain_revert_live.py`
+    was updated first (`setup_run_logging` for a full DEBUG trace,
+    `max_parallel_hosts=3` instead of the default 1) - the transfer test's "point
+    every other member" step ran sequentially and was a real contributor to how slow
+    that one looked; revert's equivalent step ran concurrently this time and was
+    noticeably faster. Both scripts remain ad hoc (not checked into git).
 
 - [x] **Cluster status validation via Splunk API - search head side done** (2026-09-16).
   Indexer cluster (poll `GET /services/cluster/master/peers`/S&R factor) is still open -

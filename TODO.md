@@ -571,6 +571,22 @@ Open items, roughly in priority order.
     every other member" step ran sequentially and was a real contributor to how slow
     that one looked; revert's equivalent step ran concurrently this time and was
     noticeably faster. Both scripts remain ad hoc (not checked into git).
+  - **Revert live-tested again 2026-09-30, this time against an unplanned real
+    static captain**: found the cluster on a static captain when checked - but
+    `prdmilbbspksh05`, not the host either the in-flight wave's dry-run resolution
+    (`captain_candidate("roma")` → `prdrmlbbspksh01`, a Milano-patching wave was
+    around 2026-09-28/29) or the original 09-24 test (`prdmilbbspksh01`) would have
+    predicted. No `state/`/`reports/` evidence of what set it that way. **Key
+    takeaway: never assume which host is the current captain - `captain_candidate()`
+    picks a *new* one for a transfer, it has no bearing on identifying an existing
+    one.** Always verify live (per-host `shcluster-status --verbose`) immediately
+    before reverting, and hardcode the script's `captain_host` from that live result,
+    not from inventory resolution. Reverted successfully once the correct host was
+    identified - same 53.8s, all 10 hosts confirmed `dynamic_captain=1` afterward. One
+    host (`prdrmlbbspksh02`) transiently timed out on the status *command* itself
+    (connection was fine, `whoami` was instant) during the pre-check sweep - cleared
+    on immediate retry, not investigated further. The ad hoc scratchpad scripts don't
+    persist across sessions - had to be rebuilt from scratch for this run.
 
 - [x] **Cluster status validation via Splunk API - search head side done** (2026-09-16).
   Indexer cluster (poll `GET /services/cluster/master/peers`/S&R factor) is still open -

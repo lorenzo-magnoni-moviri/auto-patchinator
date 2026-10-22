@@ -20,6 +20,7 @@ class ActionKind(str, Enum):
     MANUAL = "manual"
     WAIT = "wait"
     CLUSTER_WAIT = "cluster_wait"  # poll a Splunk cluster health condition until met or timeout
+    SCHEDULER_WAIT = "scheduler_wait"  # poll until this search head is actually receiving delegated searches
     STREAMSETS_PIPELINE = "streamsets_pipeline"  # POST start/stop, then poll status until target or timeout
     CAPTAIN_TRANSFER = "captain_transfer"  # set a static captain cluster-wide, then poll to confirm
     CAPTAIN_REVERT = "captain_revert"  # re-enable dynamic election cluster-wide + bootstrap, then poll to confirm
@@ -64,6 +65,8 @@ class Action:
             raise ValueError(f"action {self.name!r}: WAIT action requires wait_seconds")
         if self.kind == ActionKind.CLUSTER_WAIT and self.poll_interval_seconds is None:
             raise ValueError(f"action {self.name!r}: CLUSTER_WAIT action requires poll_interval_seconds")
+        if self.kind == ActionKind.SCHEDULER_WAIT and self.poll_interval_seconds is None:
+            raise ValueError(f"action {self.name!r}: SCHEDULER_WAIT action requires poll_interval_seconds")
         if self.kind == ActionKind.STREAMSETS_PIPELINE and (
             not self.pipeline_id or not self.target_status or self.poll_interval_seconds is None
         ):
@@ -84,6 +87,7 @@ class Action:
                 ActionKind.PLAIN,
                 ActionKind.INTERACTIVE,
                 ActionKind.CLUSTER_WAIT,
+                ActionKind.SCHEDULER_WAIT,
                 ActionKind.STREAMSETS_PIPELINE,
                 ActionKind.CAPTAIN_TRANSFER,
                 ActionKind.CAPTAIN_REVERT,

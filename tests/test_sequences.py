@@ -34,7 +34,7 @@ def test_search_head_stretched_cleans_kvstore_before_starting():
     assert names.index("clean_kvstore") < names.index("start_splunk")
     assert names == [
         "enable_boot_start", "daemon_reload", "clean_kvstore", "start_splunk",
-        "wait_for_shcluster_member_healthy",
+        "wait_for_shcluster_member_healthy", "wait_for_scheduling_resumed",
     ]
 
 
@@ -136,7 +136,10 @@ def test_fw02_starts_every_streamsets_pipeline_after_splunk_start():
 
 
 def test_timeouts_60s_default_900s_for_splunk_stop_start():
-    long_timeouts = {"stop_splunk": 900, "start_splunk": 900, "wait_for_shcluster_member_healthy": 600}
+    long_timeouts = {
+        "stop_splunk": 900, "start_splunk": 900,
+        "wait_for_shcluster_member_healthy": 600, "wait_for_scheduling_resumed": 600,
+    }
     for role in NodeRole:
         seq = get_role_sequences("anyhost", role)
         for actions in (seq.stop_per_node, seq.start_per_node):

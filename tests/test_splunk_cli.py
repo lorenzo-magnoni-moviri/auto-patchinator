@@ -7,7 +7,9 @@ from auto_patchinator.executor.splunk_cli import (
     member_health,
     normalize_line_endings,
     parse_captain,
+    parse_member_info,
     parse_shcluster_members,
+    scheduling_active,
 )
 
 # \r\n throughout, matching the real raw SSH output exactly - the bug this session
@@ -112,3 +114,46 @@ def test_member_health_missing_member():
     healthy, description = member_health(None)
     assert healthy is False
     assert "not found" in description
+
+
+# Real captured `splunk list shcluster-member-info` output shape (2026-10-22) - tight
+# "key:value", no padding spaces, unlike shcluster-status's right-aligned "key : value".
+REAL_MEMBER_INFO_OUTPUT = (
+    "\t\tactive_historical_search_count:7\r\n"
+    "\t\tactive_realtime_search_count:0\r\n"
+)
+
+
+def test_parse_member_info_tight_colon_spacing():
+    fields = parse_member_info(REAL_MEMBER_INFO_OUTPUT)
+    assert fields["active_historical_search_count"] == "7"
+    assert fields["active_realtime_search_count"] == "0"
+
+
+def test_parse_member_info_also_accepts_padded_colon_spacing():
+    fields = parse_member_info("\t\t active_historical_search_count : 3 \r\n")
+    assert fields["active_historical_search_count"] == "3"
+
+
+def test_scheduling_active_true_when_nonzero():
+    active, description = scheduling_active({"active_historical_search_count": "7"})
+    assert active is True
+    assert "active_historical_search_count=7" in description
+
+
+def test_scheduling_active_false_when_zero():
+    active, description = scheduling_active({"active_historical_search_count": "0"})
+    assert active is False
+    assert "active_historical_search_count=0" in description
+
+
+def test_scheduling_active_false_when_field_missing():
+    active, description = scheduling_active({})
+    assert active is False
+    assert "missing" in description
+
+
+def test_scheduling_active_false_when_not_a_number():
+    active, description = scheduling_active({"active_historical_search_count": "n/a"})
+    assert active is False
+    assert "not a number" in description

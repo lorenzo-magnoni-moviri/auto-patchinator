@@ -105,3 +105,38 @@ def member_health(fields: dict[str, str] | None) -> tuple[bool, str]:
     }
     description = "  ".join(f"{name}={fields.get(name, '<missing>')!r}" for name in _REQUIRED_HEALTHY_FIELDS)
     return not unmet, description
+
+
+def parse_member_info(output: str) -> dict[str, str]:
+    """Parse `splunk list shcluster-member-info` output - this is always the one
+    running member's own info (not a multi-member report like shcluster-status), so
+    no section-splitting needed, just a flat set of `field:value` lines, e.g.
+    'active_historical_search_count', 'active_realtime_search_count'. Observed live
+    (2026-10-22) as tight 'key:value' with no padding spaces, unlike
+    shcluster-status's right-aligned 'key : value' tables - the regex tolerates
+    either spacing so it isn't tied to that one observation."""
+    output = normalize_line_endings(output)
+    return {
+        key: value.rstrip()
+        for key, value in re.findall(r"^\s*(\w+)\s*:\s*(.*)$", output, re.MULTILINE)
+    }
+
+
+def scheduling_active(fields: dict[str, str]) -> tuple[bool, str]:
+    """Returns (active, description) for whether this member shows any active
+    historical search - from parse_member_info's output. This is a different signal
+    than member_health: member_health only confirms basic shcluster replication/
+    membership status, not whether the search scheduler's delegation pool has
+    actually accepted this member back. A real incident (2026-10-22) showed a member
+    pass member_health cleanly (status=Up, in sync, no restart required) while the
+    captain's delegated scheduled-search jobs to it kept failing for hours with
+    "Remote Scheduler is not ready to receive jobs... requisite pool members have not
+    joined" - member_health has no visibility into that failure mode at all."""
+    raw = fields.get("active_historical_search_count")
+    if raw is None:
+        return False, "active_historical_search_count missing from output"
+    try:
+        count = int(raw)
+    except ValueError:
+        return False, f"active_historical_search_count={raw!r} (not a number)"
+    return count > 0, f"active_historical_search_count={count}"

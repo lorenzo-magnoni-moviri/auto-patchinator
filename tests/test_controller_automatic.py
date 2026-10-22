@@ -103,10 +103,11 @@ def test_clean_kvstore_declined_in_automatic_mode_is_skipped_not_run(tmp_path, i
     plan = _start_step_plan(inventory, {1: ("shx01",)})
     state = store.build_initial_state("t", "p.xlsx", "s", plan)
     factory = RecordingConnectionFactory()
-    # mode=a, decline the kvstore-clean prompt, then ENTER for the two remaining forced-
-    # manual confirmations (wait_for_shcluster_member_healthy - no Splunk API credentials
-    # configured - and revert_captain_dynamic/send_mail).
-    feed = iter(["a", "n", "", "", ""])
+    # mode=a, decline the kvstore-clean prompt, then ENTER for the remaining forced-
+    # manual confirmations (wait_for_shcluster_member_healthy and
+    # wait_for_scheduling_resumed - no Splunk API credentials configured - and
+    # revert_captain_dynamic/send_mail).
+    feed = iter(["a", "n", "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda *_: next(feed))
     ctrl = RunController(plan, state, str(tmp_path), factory, inventory)
     ctrl.run()
@@ -125,7 +126,7 @@ def test_clean_kvstore_confirmed_in_automatic_mode_runs_it(tmp_path, inventory, 
     plan = _start_step_plan(inventory, {1: ("shx01",)})
     state = store.build_initial_state("t", "p.xlsx", "s", plan)
     factory = RecordingConnectionFactory()
-    feed = iter(["a", "", "", "", ""])
+    feed = iter(["a", "", "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda *_: next(feed))
     ctrl = RunController(plan, state, str(tmp_path), factory, inventory)
     ctrl.run()

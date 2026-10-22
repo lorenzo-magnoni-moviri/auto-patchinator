@@ -24,6 +24,58 @@ Open items, roughly in priority order.
   re-prompting; automatic mode shows an animated "..." while an action runs.
 - [x] Full DEBUG audit logging to `logs/run-<id>.log` (SSH send/receive, operator
   choices, passwords redacted).
+- [x] **New `SCHEDULER_WAIT` action: confirm scheduling actually resumed after a
+  search head restarts, not just basic cluster membership health** (2026-10-22, real
+  incident). Last night's Roma search-head patch completed cleanly (every
+  `wait_for_shcluster_member_healthy` poll passed), but the next morning scheduled
+  searches delegated by the captain to those Roma hosts were failing with
+  `status=delegated_remote_error, reason="Remote Scheduler is not ready to receive
+  jobs. Most likely reason for this is that requisite pool members have not joined"`
+  (`_internal` `sourcetype=scheduler`/`splunkd.log`) - restarting Splunk on just those
+  nodes fixed it. Root cause: `wait_for_shcluster_member_healthy`'s `member_health`
+  check (`status`/`out_of_sync_node`/`restart_required`) only confirms basic
+  shcluster replication/membership health - it has no visibility into whether the
+  search scheduler's delegation pool separately accepted the member back, and
+  doesn't keep watching after its own poll succeeds, so a member that looked fine
+  right after restart could silently sit in this broken state for hours before a
+  real scheduled search exposed it. Not a captain-transfer/revert bug - that
+  mechanism has run clean across all three live incidents so far (see "Captain
+  transfer live state" project memory); this is a separate Splunk subsystem.
+  - New action: `wait_for_scheduling_resumed` (`actions/sequences.py`), appended
+    right after `wait_for_shcluster_member_healthy` in both
+    `search_head_stretched_sequences()` and `search_head_simple_sequences()`'s start
+    halves. Polls `splunk list shcluster-member-info -auth "<user>:<password>"` for
+    `active_historical_search_count > 0` (the signal explored a few turns earlier in
+    this same investigation - confirmed live against the real cluster first).
+    10 min timeout / 5 min poll interval (operator-specified) - deliberately
+    generous since the real gap was observed to persist for hours, and two poll
+    attempts (5 min, 10 min) is enough to not flag a merely-mid-cycle host as broken.
+  - New `ActionKind.SCHEDULER_WAIT` (`actions/types.py`) + `RunController.
+    _execute_scheduler_wait` (`runner/controller.py`, mirrors `_execute_cluster_wait`
+    exactly) + `executor/splunk_cli.py`'s `parse_member_info`/`scheduling_active`
+    (new pure parsing helpers, same pattern as `parse_shcluster_members`/
+    `member_health`). Same credentials/forced-manual gating as `CLUSTER_WAIT` -
+    needs Splunk API credentials, forced manual otherwise.
+  - On timeout, the failure message explicitly suggests the operator's own
+    remediation guidance: wait a few more minutes and re-check by hand; if it's
+    still not scheduling after that, a full restart of Splunk on that host has been
+    observed to resolve it. Never an automatic restart - stays a suggestion in the
+    failure text, same as every other failure in this tool (retry menu, operator
+    decides).
+  - Previewed the exact automatic-mode terminal output for both outcomes (driven
+    through the real `_attempt_with_retry` wrapper, not just the inner function) -
+    success: `[host] wait for scheduling resumed ... DONE`; failure: the standard
+    red `FAILED` block with the remediation message, then the usual
+    `[r]etry [d]one [s]kip [q]uit` menu.
+  - Considered (and ruled out by the operator) a related ordering bug: transfer and
+    revert each independently recompute their captain host via
+    `captain_candidate(_other_site(p))` rather than sharing one value - this could
+    diverge if a single wave patched stretched-SH hosts on both sites in separate
+    groups. Operator confirmed that scenario never happens in this environment, so
+    left as-is, not fixed.
+  - 13 new tests (6 in `tests/test_splunk_cli.py`, 7 in new
+    `tests/test_controller_scheduler_wait.py` mirroring
+    `tests/test_controller_cluster_wait.py`'s structure) - 231 total suite.
 - [x] **Verbose per-host progress for `CAPTAIN_TRANSFER`/`CAPTAIN_REVERT` in automatic
   mode** (2026-09-24, operator feedback after the live transfer test: the terse
   `"[group] transfer captain static ... DONE"` line every other automatic-mode action

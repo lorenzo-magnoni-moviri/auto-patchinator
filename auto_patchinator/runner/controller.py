@@ -57,7 +57,14 @@ from auto_patchinator.actions.sequences import CRONTAB_BACKUP, splunk_bin_for
 from auto_patchinator.actions.types import Action, ActionKind, Identity
 from auto_patchinator.config.inventory import Inventory
 from auto_patchinator.executor import streamsets_api
-from auto_patchinator.executor.splunk_cli import find_member, member_health, parse_captain, parse_shcluster_members
+from auto_patchinator.executor.splunk_cli import (
+    find_member,
+    member_health,
+    parse_captain,
+    parse_member_info,
+    parse_shcluster_members,
+    scheduling_active,
+)
 from auto_patchinator.executor.ssh import su_command
 from auto_patchinator.plan.run_plan import RunStepPlan
 from auto_patchinator.state import store
@@ -197,9 +204,10 @@ def is_forced_manual(
 ) -> bool:
     if action.kind == ActionKind.MANUAL:
         return True
-    if action.kind == ActionKind.CLUSTER_WAIT:
+    if action.kind in (ActionKind.CLUSTER_WAIT, ActionKind.SCHEDULER_WAIT):
         # Needs Splunk admin credentials (not an SSH identity) - if they're not
-        # configured, the operator has to verify cluster health by hand instead.
+        # configured, the operator has to verify cluster health (or scheduling
+        # activity) by hand instead.
         return not (
             splunk_api_credentials
             and splunk_api_credentials.username
@@ -1087,6 +1095,10 @@ class RunController:
                 self._execute_cluster_wait(scope, action, action_state, quiet, connections, ok_prefix)
                 return
 
+            if action.kind == ActionKind.SCHEDULER_WAIT:
+                self._execute_scheduler_wait(scope, action, action_state, quiet, connections, ok_prefix)
+                return
+
             if action.kind == ActionKind.STREAMSETS_PIPELINE:
                 self._execute_streamsets_pipeline(scope, action, action_state, quiet, connections, ok_prefix)
                 return
@@ -1197,6 +1209,84 @@ class RunController:
                     action_state.error = (
                         f"timed out after {action.timeout_seconds}s waiting for a healthy "
                         f"member status (last: {description})"
+                    )
+                    break
+                time.sleep(action.poll_interval_seconds)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the operator, not swallowed
+            if connections is not None:
+                connections.drop(action.identity)
+            action_state.status = ActionStatus.FAILED
+            action_state.error = str(exc)
+            _log.exception("error running %s / %s", scope, action.name)
+        finally:
+            if owns_connection:
+                connection.close()
+
+        if action_state.status == ActionStatus.SUCCESS:
+            _log.info("success %s / %s: %s", scope, action.name, action_state.output)
+            if not quiet:
+                print(f"{green(ok_prefix)}: {scope} / {action.name}")
+        elif action_state.error:
+            _log.error("failed %s / %s: %s", scope, action.name, action_state.error)
+        self._save()
+
+    def _execute_scheduler_wait(
+        self,
+        scope: str,
+        action: Action,
+        action_state: ActionState,
+        quiet: bool,
+        connections: "_HostConnections | None",
+        ok_prefix: str,
+    ) -> None:
+        """SCHEDULER_WAIT: poll `splunk list shcluster-member-info -auth ...` for
+        `scope`'s own active_historical_search_count until it's non-zero or
+        action.timeout_seconds elapses. Deliberately separate from (and runs after)
+        CLUSTER_WAIT's membership-health check - a member can be healthy by that
+        check while still not actually receiving delegated scheduled searches from
+        the captain (found live, 2026-10-22 - see TODO.md). Only reached when Splunk
+        API credentials are configured - is_forced_manual routes this to a manual
+        confirmation otherwise. Same no-per-poll-console-output rationale as
+        _execute_cluster_wait."""
+        if self._dry_run:
+            action_state.status = ActionStatus.SUCCESS
+            action_state.output = "simulated (dry-run) - scheduling activity not actually polled"
+            if not quiet:
+                print(f"{green(ok_prefix)}: {scope} / {action.name}")
+            _log.info("success %s / %s (dry-run, simulated)", scope, action.name)
+            self._save()
+            return
+
+        role = self._inventory.get(scope).role
+        owns_connection = connections is None
+        if connections is not None:
+            connection = connections.get(action.identity)
+        else:
+            connection = self._connection_factory(hostname=scope, identity=action.identity, role=role)
+            connection.connect()
+
+        creds = self._splunk_api_credentials
+        command = f'{splunk_bin_for(role)} list shcluster-member-info -auth "{creds.username}:$AP_SECRET"'
+        deadline = time.monotonic() + action.timeout_seconds
+        description = "no poll attempt completed"
+        try:
+            while True:
+                result = connection.run_plain_with_secret(command, creds.password, timeout=30)
+                fields = parse_member_info(result.output)
+                active, description = scheduling_active(fields)
+                _log.debug("scheduler_wait poll %s / %s: active=%s %s", scope, action.name, active, description)
+                if active:
+                    action_state.status = ActionStatus.SUCCESS
+                    action_state.output = f"scheduling active: {description}"
+                    break
+                if time.monotonic() >= deadline:
+                    action_state.status = ActionStatus.FAILED
+                    action_state.error = (
+                        f"timed out after {action.timeout_seconds}s waiting for scheduling to "
+                        f"resume (last: {description}). Scheduling may just need a bit more time "
+                        "- wait a few more minutes and re-check by hand; if it's still not "
+                        "scheduling after that, a full restart of Splunk on this host has been "
+                        "observed to resolve it."
                     )
                     break
                 time.sleep(action.poll_interval_seconds)

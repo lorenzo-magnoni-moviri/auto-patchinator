@@ -151,6 +151,51 @@ def wait_for_shcluster_member_healthy(splunk_bin: str) -> Action:
     )
 
 
+# 10 min timeout / 5 min poll interval (operator-specified, 2026-10-22, after a real
+# incident - see wait_for_scheduling_resumed below): basic shcluster membership health
+# (wait_for_shcluster_member_healthy above) can be confirmed within its own 10 min
+# window while the search scheduler's delegation pool is still not accepting jobs for
+# this member - that gap was observed to persist for hours in production, so this
+# poll's own timeout is deliberately generous rather than tight; two poll attempts (at
+# 5 min and 10 min) is enough to not flag a merely-mid-cycle host as broken.
+_SCHEDULER_WAIT_POLL_INTERVAL_SECONDS = 300
+_SCHEDULER_WAIT_TIMEOUT_SECONDS = 600
+
+
+def wait_for_scheduling_resumed(splunk_bin: str) -> Action:
+    """Poll this search head's own active_historical_search_count (via `splunk list
+    shcluster-member-info -auth`) after it rejoins the cluster, until it shows at
+    least one active search or the timeout elapses. Runs AFTER
+    wait_for_shcluster_member_healthy, deliberately separate from it:
+    member_health only confirms basic shcluster replication/membership status
+    (status/out_of_sync_node/restart_required), not whether the search scheduler's
+    delegation pool has actually accepted this member back - a real incident
+    (2026-10-22) showed a member pass that membership check cleanly while the
+    captain's delegated scheduled-search jobs to it kept failing for hours with
+    "Remote Scheduler is not ready to receive jobs... requisite pool members have not
+    joined" (visible in _internal sourcetype=scheduler / splunkd.log, status=
+    delegated_remote_error) - nothing in the wave's own health check would have
+    caught that at the time, since it only polls once right after start_splunk, not
+    on an ongoing basis. Needs Splunk API credentials, same as
+    wait_for_shcluster_member_healthy; forced manual if they aren't configured."""
+    return Action(
+        name="wait_for_scheduling_resumed",
+        kind=ActionKind.SCHEDULER_WAIT,
+        identity=Identity.SPLUNK,
+        poll_interval_seconds=_SCHEDULER_WAIT_POLL_INTERVAL_SECONDS,
+        timeout_seconds=_SCHEDULER_WAIT_TIMEOUT_SECONDS,
+        note=(
+            "Confirm this host is actually receiving delegated scheduled searches "
+            "again, not just reporting healthy shcluster membership - "
+            f"   {splunk_bin} list shcluster-member-info -auth <user>:<password>\n"
+            "Look for active_historical_search_count > 0. If it's still 0 after "
+            "waiting: scheduling may just need a bit more time - wait a few more "
+            "minutes and re-check by hand; if it's still not scheduling after that, "
+            "a full restart of Splunk on this host has been observed to resolve it."
+        ),
+    )
+
+
 def backup_crontab() -> Action:
     return Action(
         name="backup_crontab",
@@ -223,7 +268,11 @@ def search_head_simple_sequences() -> RoleSequences:
     # just not one this tool coordinates a transfer/revert around.
     return RoleSequences(
         stop_per_node=_default_stop(SPLUNK_BIN),
-        start_per_node=(*_default_start(SPLUNK_BIN), wait_for_shcluster_member_healthy(SPLUNK_BIN)),
+        start_per_node=(
+            *_default_start(SPLUNK_BIN),
+            wait_for_shcluster_member_healthy(SPLUNK_BIN),
+            wait_for_scheduling_resumed(SPLUNK_BIN),
+        ),
     )
 
 
@@ -297,6 +346,7 @@ def search_head_stretched_sequences() -> RoleSequences:
             clean_kvstore(SPLUNK_BIN),
             start_splunk(SPLUNK_BIN),
             wait_for_shcluster_member_healthy(SPLUNK_BIN),
+            wait_for_scheduling_resumed(SPLUNK_BIN),
         ),
     )
 

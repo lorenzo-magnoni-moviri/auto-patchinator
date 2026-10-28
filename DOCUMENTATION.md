@@ -287,9 +287,10 @@ to this machine.
 - `AP_USERNAME` / `AP_PASSWORD` — your own PAS login credentials. If both are set, a
   live run skips the interactive prompt entirely.
 - `SPLUNK_API_TOKEN` / `SPLUNK_API_USER` / `SPLUNK_API_PASSWORD` — now consumed by the
-  pre-patch pretest's captain/election/KV-store checks, `CLUSTER_WAIT`'s post-restart
-  cluster-health poll, and `CAPTAIN_TRANSFER`/`CAPTAIN_REVERT`'s captain-status
-  verification (the `-auth user:password` form specifically - `SPLUNK_API_USER` +
+  pre-patch pretest's captain/election/KV-store checks, `SCHEDULER_WAIT`'s post-restart
+  scheduling poll, the `health-check` subcommand, and `CAPTAIN_TRANSFER`/
+  `CAPTAIN_REVERT`'s captain-status verification (the `-auth user:password` form
+  specifically - `SPLUNK_API_USER` +
   `SPLUNK_API_PASSWORD`, not a bare token). Loadable via
   `credentials.load_splunk_api_credentials()`; every feature that needs them degrades
   to a manual step (never a hard failure) if they aren't set.
@@ -642,7 +643,7 @@ same concrete host both directions use:
   (`--max-parallel-hosts` workers), the member variant of the same command. Then polls
   `shcluster-status --verbose` until the whole cluster confirms the static captain, up
   to a 600s timeout (15s apart) - no live data yet on real settle time, so this starts
-  conservative, same as `CLUSTER_WAIT`.
+  conservative, same as `SCHEDULER_WAIT`.
 - **After the last stretched-SH start in the wave** — re-enables dynamic election on
   every member except the current captain (concurrently), then the captain itself,
   then from that host,

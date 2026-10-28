@@ -6,6 +6,27 @@ Open items, roughly in priority order.
 
 ## Recently done
 
+- [x] **Merged the search-head post-restart membership-health check into the
+  scheduling-resumed check - one step per node instead of two** (2026-10-28, operator
+  feedback after reviewing the new `health-check` subcommand's live output: checking
+  cluster membership and scheduling separately was overdoing it). A search head that
+  is actually receiving delegated scheduled searches is, by definition, already a
+  healthy cluster member - scheduling resumed is the stronger signal and implies
+  membership health, so the separate membership-only poll added no information the
+  scheduling poll didn't already cover. Removed entirely rather than left dormant:
+  `wait_for_shcluster_member_healthy()` (`actions/sequences.py`), the
+  `ActionKind.CLUSTER_WAIT` kind and its validation (`actions/types.py`), and
+  `RunController._execute_cluster_wait` + its dispatch branch/is_forced_manual entry
+  (`runner/controller.py`) are all gone - `wait_for_scheduling_resumed`
+  (`SCHEDULER_WAIT`) is now the sole post-restart health gate in both
+  `search_head_stretched_sequences()` and `search_head_simple_sequences()`'s start
+  halves. `parse_shcluster_members`/`member_health` (`executor/splunk_cli.py`) are
+  unaffected and still used elsewhere (the `health-check` subcommand's
+  `cluster_membership` check, `find_member` by `CAPTAIN_TRANSFER`'s verification
+  poll) - only the one dedicated wait-action call site was removed.
+  `tests/test_controller_cluster_wait.py` (7 tests) deleted; `tests/test_sequences.py`
+  and `tests/test_controller_automatic.py` updated for the shorter sequence/one fewer
+  forced-manual confirmation. 266 tests passing (273 - 7 deleted).
 - [x] Unit test suite (`tests/`, 61 tests) covering excel parsing, action mapping,
   dependency ordering, wave/host mapping, role sequences, inventory, PAS login string
   building, and state persistence/resume. Run with `python -m pytest` (install with
@@ -95,8 +116,9 @@ Open items, roughly in priority order.
     tuple of `(check_name, fn)` pairs, `fn(ctx) -> list[CheckResult]`; adding a new
     check to an existing group is exactly one line. `GROUPS` is the top-level registry
     the CLI, terminal printer, and markdown report all walk generically.
-  - Search heads: `cluster_membership` (per-host, same `member_health` rule
-    `CLUSTER_WAIT` uses), `captain_and_election` (cluster-wide - asks whichever member
+  - Search heads: `cluster_membership` (per-host, same `member_health` rule the
+    search-head wait action used to use before it was merged away - see below),
+    `captain_and_election` (cluster-wide - asks whichever member
     answers first, same pattern as the pretest's captain check; a *static* captain is
     reported informationally, not as a failure - transfer/revert deliberately leave a
     cluster on a static captain for a while during a wave), `scheduling` (per-host,
@@ -587,7 +609,7 @@ Open items, roughly in priority order.
   `STOPPING`/`STARTING` for a few seconds first. Credentials via
   `STREAMSETS_API_USER`/`STREAMSETS_API_PASSWORD` in `.env`
   (`executor/credentials.py:load_streamsets_api_credentials`) - forced manual when
-  unset, same pattern as CLUSTER_WAIT. The 5 real pipeline (label, id) pairs (RDK,
+  unset, same pattern as SCHEDULER_WAIT. The 5 real pipeline (label, id) pairs (RDK,
   ODP, ODP PODS, RDKV, ATD) replace both the old `disable_streamsets_pipelines` and
   `enable_streamsets_pipelines` manual_todo placeholders in `_prdmilbbspkfw02_sequences()`.
   Both directions verified live end to end against all 5 real production pipelines
@@ -623,7 +645,7 @@ Open items, roughly in priority order.
     (`--max-parallel-hosts` workers), then polls `shcluster-status --verbose` until
     the whole cluster confirms the static captain. No `-auth` needed for the
     `edit shcluster-config` calls themselves (confirmed from the original manual
-    instructions), but the verification poll needs it, same as `CLUSTER_WAIT`.
+    instructions), but the verification poll needs it, same as `SCHEDULER_WAIT`.
   - **Revert** (post_group, after the last per-host start): `edit shcluster-config
     -election true` on every other member concurrently, then on the captain itself,
     then `bootstrap shcluster-captain -servers_list "..." -auth` from the captain

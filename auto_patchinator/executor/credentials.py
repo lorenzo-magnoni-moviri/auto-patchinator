@@ -7,7 +7,7 @@ If AP_USERNAME and AP_PASSWORD are set in the environment (or in a .env file at 
 project root), they are used without prompting.
 
 Also loads (optional) Splunk REST API credentials - consumed by preflight.py's pretest
-and CLUSTER_WAIT - via SPLUNK_API_TOKEN or SPLUNK_API_USER/SPLUNK_API_PASSWORD, and
+and SCHEDULER_WAIT - via SPLUNK_API_TOKEN or SPLUNK_API_USER/SPLUNK_API_PASSWORD, and
 StreamSets Data Collector REST API credentials for prdmilbbspkfw02's pipeline
 stop/start automation via STREAMSETS_API_USER/STREAMSETS_API_PASSWORD. Never hardcode
 these values; type/store them only via .env (gitignored).
@@ -129,7 +129,7 @@ def load_streamsets_api_credentials() -> StreamSetsApiCredentials | None:
 
 # Every credential field this tool actually consumes for something - deliberately
 # excludes SPLUNK_API_TOKEN: every feature that uses Splunk API credentials needs the
-# `-auth user:password` CLI form (preflight's checks, CLUSTER_WAIT, CAPTAIN_TRANSFER/
+# `-auth user:password` CLI form (preflight's checks, SCHEDULER_WAIT, CAPTAIN_TRANSFER/
 # REVERT, all run `splunk show .../splunk bootstrap ... -auth`), never a bare token -
 # prompting for a field nothing reads would just be noise.
 ENV_CREDENTIAL_FIELDS: tuple[str, ...] = (

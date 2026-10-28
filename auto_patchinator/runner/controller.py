@@ -59,10 +59,8 @@ from auto_patchinator.config.inventory import Inventory
 from auto_patchinator.executor import streamsets_api
 from auto_patchinator.executor.splunk_cli import (
     find_member,
-    member_health,
     parse_captain,
     parse_member_info,
-    parse_shcluster_members,
     scheduling_active,
 )
 from auto_patchinator.executor.ssh import su_command
@@ -105,7 +103,6 @@ _AUTO_LABELS = {
     "backup_crontab": "backing up crontab",
     "disable_crontab": "disabling crontab",
     "enable_crontab": "restoring crontab",
-    "wait_for_shcluster_member_healthy": "waiting for search head cluster membership",
 }
 
 _AUTO_LABEL_WIDTH = 50  # pad so the DONE/FAILED column lines up
@@ -145,10 +142,6 @@ _GUIDE_DESCRIPTIONS = {
         "crontab command is aliased to 'crontab -i': answer 'yes' at the confirmation."
     ),
     "enable_crontab": f"Restore the crontab from the {CRONTAB_BACKUP} copy.",
-    "wait_for_shcluster_member_healthy": (
-        "Confirm this host rejoined the search head cluster cleanly after restarting - "
-        "polls up to 10 minutes for status=Up, out_of_sync_node=0, restart_required=0."
-    ),
 }
 
 
@@ -204,10 +197,9 @@ def is_forced_manual(
 ) -> bool:
     if action.kind == ActionKind.MANUAL:
         return True
-    if action.kind in (ActionKind.CLUSTER_WAIT, ActionKind.SCHEDULER_WAIT):
+    if action.kind == ActionKind.SCHEDULER_WAIT:
         # Needs Splunk admin credentials (not an SSH identity) - if they're not
-        # configured, the operator has to verify cluster health (or scheduling
-        # activity) by hand instead.
+        # configured, the operator has to verify scheduling activity by hand instead.
         return not (
             splunk_api_credentials
             and splunk_api_credentials.username
@@ -216,9 +208,9 @@ def is_forced_manual(
     if action.kind in (ActionKind.CAPTAIN_TRANSFER, ActionKind.CAPTAIN_REVERT):
         # Both need Splunk admin credentials: CAPTAIN_REVERT's bootstrap step needs
         # -auth directly, and CAPTAIN_TRANSFER's own commands don't but its
-        # verification poll (splunk show shcluster-status --verbose) does too, same
-        # as CLUSTER_WAIT - without credentials there's no way to confirm either one
-        # actually worked, so both are forced manual together. Also forced manual if
+        # verification poll (splunk show shcluster-status --verbose) does too -
+        # without credentials there's no way to confirm either one actually worked,
+        # so both are forced manual together. Also forced manual if
         # any host in the cluster has the splunk identity marked CyberArk-GUI-only -
         # can't automate "touch every member" if one member can't be reached at all.
         if not (
@@ -296,8 +288,9 @@ class RunController:
         self._connection_factory = connection_factory
         self._inventory = inventory
         self._dry_run = dry_run
-        # Only consumed by CLUSTER_WAIT actions (post-restart cluster-health polling) -
-        # None means those are forced manual instead (see is_forced_manual).
+        # Consumed by SCHEDULER_WAIT (post-restart scheduling polling) and by
+        # CAPTAIN_TRANSFER/CAPTAIN_REVERT's verification poll - None means those are
+        # forced manual instead (see is_forced_manual).
         self._splunk_api_credentials = splunk_api_credentials
         # Only consumed by STREAMSETS_PIPELINE actions (prdmilbbspkfw02's pipeline
         # stop/start) - None means those are forced manual instead.
@@ -1091,10 +1084,6 @@ class RunController:
                 self._save()
                 return
 
-            if action.kind == ActionKind.CLUSTER_WAIT:
-                self._execute_cluster_wait(scope, action, action_state, quiet, connections, ok_prefix)
-                return
-
             if action.kind == ActionKind.SCHEDULER_WAIT:
                 self._execute_scheduler_wait(scope, action, action_state, quiet, connections, ok_prefix)
                 return
@@ -1155,81 +1144,6 @@ class RunController:
             _log.exception("error running %s / %s", scope, action.name)
         self._save()
 
-    def _execute_cluster_wait(
-        self,
-        scope: str,
-        action: Action,
-        action_state: ActionState,
-        quiet: bool,
-        connections: "_HostConnections | None",
-        ok_prefix: str,
-    ) -> None:
-        """CLUSTER_WAIT: poll `splunk show shcluster-status --verbose -auth ...` for
-        `scope`'s own member entry until healthy or action.timeout_seconds elapses.
-        Only reached when Splunk API credentials are configured - is_forced_manual
-        routes this to a manual confirmation otherwise, so self._splunk_api_credentials
-        is never None here. No per-poll console output (quiet or not) - a poll can run
-        for minutes, and printing here would fight with _attempt_with_retry's own
-        progress_line/animated-dots wrapper around this whole call; each attempt is
-        still logged to the DEBUG audit log, and the final health description is
-        always in action_state.output/.error for the standard OK/FAILED line after."""
-        if self._dry_run:
-            action_state.status = ActionStatus.SUCCESS
-            action_state.output = "simulated (dry-run) - cluster health not actually polled"
-            if not quiet:
-                print(f"{green(ok_prefix)}: {scope} / {action.name}")
-            _log.info("success %s / %s (dry-run, simulated)", scope, action.name)
-            self._save()
-            return
-
-        role = self._inventory.get(scope).role
-        owns_connection = connections is None
-        if connections is not None:
-            connection = connections.get(action.identity)
-        else:
-            connection = self._connection_factory(hostname=scope, identity=action.identity, role=role)
-            connection.connect()
-
-        creds = self._splunk_api_credentials
-        command = f'{splunk_bin_for(role)} show shcluster-status --verbose -auth "{creds.username}:$AP_SECRET"'
-        deadline = time.monotonic() + action.timeout_seconds
-        description = "no poll attempt completed"
-        try:
-            while True:
-                result = connection.run_plain_with_secret(command, creds.password, timeout=30)
-                fields = find_member(parse_shcluster_members(result.output), scope)
-                healthy, description = member_health(fields)
-                _log.debug("cluster_wait poll %s / %s: healthy=%s %s", scope, action.name, healthy, description)
-                if healthy:
-                    action_state.status = ActionStatus.SUCCESS
-                    action_state.output = f"member healthy: {description}"
-                    break
-                if time.monotonic() >= deadline:
-                    action_state.status = ActionStatus.FAILED
-                    action_state.error = (
-                        f"timed out after {action.timeout_seconds}s waiting for a healthy "
-                        f"member status (last: {description})"
-                    )
-                    break
-                time.sleep(action.poll_interval_seconds)
-        except Exception as exc:  # noqa: BLE001 - surfaced to the operator, not swallowed
-            if connections is not None:
-                connections.drop(action.identity)
-            action_state.status = ActionStatus.FAILED
-            action_state.error = str(exc)
-            _log.exception("error running %s / %s", scope, action.name)
-        finally:
-            if owns_connection:
-                connection.close()
-
-        if action_state.status == ActionStatus.SUCCESS:
-            _log.info("success %s / %s: %s", scope, action.name, action_state.output)
-            if not quiet:
-                print(f"{green(ok_prefix)}: {scope} / {action.name}")
-        elif action_state.error:
-            _log.error("failed %s / %s: %s", scope, action.name, action_state.error)
-        self._save()
-
     def _execute_scheduler_wait(
         self,
         scope: str,
@@ -1241,13 +1155,17 @@ class RunController:
     ) -> None:
         """SCHEDULER_WAIT: poll `splunk list shcluster-member-info -auth ...` for
         `scope`'s own active_historical_search_count until it's non-zero or
-        action.timeout_seconds elapses. Deliberately separate from (and runs after)
-        CLUSTER_WAIT's membership-health check - a member can be healthy by that
-        check while still not actually receiving delegated scheduled searches from
-        the captain (found live, 2026-10-22 - see TODO.md). Only reached when Splunk
-        API credentials are configured - is_forced_manual routes this to a manual
-        confirmation otherwise. Same no-per-poll-console-output rationale as
-        _execute_cluster_wait."""
+        action.timeout_seconds elapses - the sole post-restart health gate for search
+        heads (a separate membership-only CLUSTER_WAIT poll used to run first; merged
+        away 2026-10-28 since scheduling resumed already implies healthy membership -
+        see wait_for_scheduling_resumed's docstring in actions/sequences.py). Only
+        reached when Splunk API credentials are configured - is_forced_manual routes
+        this to a manual confirmation otherwise. No per-poll console output (quiet or
+        not) - a poll can run for minutes, and printing here would fight with
+        _attempt_with_retry's own progress_line/animated-dots wrapper around this
+        whole call; each attempt is still logged to the DEBUG audit log, and the final
+        description is always in action_state.output/.error for the standard
+        OK/FAILED line after."""
         if self._dry_run:
             action_state.status = ActionStatus.SUCCESS
             action_state.output = "simulated (dry-run) - scheduling activity not actually polled"

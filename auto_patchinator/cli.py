@@ -289,7 +289,8 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     gateway_host, gateway_port = _resolve_pas_gateway(inventory)
     # Just an env/`.env` read, never prompts - safe to resolve once, early, and reuse
-    # for the plan summary, the pretest, and the controller (CLUSTER_WAIT actions).
+    # for the plan summary, the pretest, and the controller (SCHEDULER_WAIT and
+    # CAPTAIN_TRANSFER/CAPTAIN_REVERT actions).
     splunk_api_credentials = load_splunk_api_credentials()
     # Same idea, for STREAMSETS_PIPELINE actions (prdmilbbspkfw02's pipeline stop/start) -
     # not consumed by the pretest, only the plan summary and the controller.

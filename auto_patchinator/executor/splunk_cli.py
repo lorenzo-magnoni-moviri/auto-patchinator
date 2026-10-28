@@ -1,7 +1,9 @@
 """Pure text-parsing helpers for `splunk show <subcommand> --verbose` CLI output.
 No I/O here - callers run the actual command (over SSH, via run_plain_with_secret)
 and pass the raw output in. Shared by the pre-patch pretest's captain/kvstore checks
-(preflight.py) and the post-restart cluster-health wait action (runner/controller.py).
+(preflight.py), CAPTAIN_TRANSFER/CAPTAIN_REVERT's verification poll
+(runner/controller.py), and the read-only `health-check` subcommand
+(healthcheck/checks.py).
 """
 from __future__ import annotations
 
@@ -21,12 +23,11 @@ def parse_shcluster_members(output: str) -> dict[str, dict[str, str]]:
     returns {member_fqdn: {field: value}} for every member, e.g. 'status', 'label',
     'out_of_sync_node', 'restart_required'. Each member's block is a right-aligned
     "key : value" table, same shape as the "Captain:"/"KV store members:" sections
-    (see preflight.py) - confirmed live, 2026-09-16 (see TODO.md), though this
-    specific section (as opposed to "Captain:"/"KV store members:", already
-    live-verified) has not itself been exercised against a real post-restart poll
-    loop yet - the member-header line here is a bare hostname/FQDN with no ':port'
-    suffix, unlike "KV store members:"'s 'host:8191' - confirm this holds the first
-    time wait_for_shcluster_member_healthy runs for real."""
+    (see preflight.py) - confirmed live, 2026-09-16 (see TODO.md); this specific
+    section is also live-verified via the `health-check` subcommand's
+    cluster_membership check (2026-10-28) - the member-header line here is a bare
+    hostname/FQDN with no ':port' suffix, unlike "KV store members:"'s
+    'host:8191'."""
     output = normalize_line_endings(output)
     section = re.search(r"^ Members:\s*\n(.*?)\Z", output, re.DOTALL | re.MULTILINE)
     if not section:

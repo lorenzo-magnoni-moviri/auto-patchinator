@@ -5,9 +5,9 @@ script) already does - this module is committed, tested code, so it stays
 self-contained instead of coupling to another module's internals. It only reuses the
 stable, already-multiply-used PUBLIC parsing helpers in executor/splunk_cli.py
 (parse_captain, parse_shcluster_members, member_health, find_member,
-parse_member_info, scheduling_active - the exact same functions CLUSTER_WAIT,
-SCHEDULER_WAIT, CAPTAIN_TRANSFER/REVERT and the pretest already use) and
-executor/connectivity.py's check_connectivity, unmodified.
+parse_member_info, scheduling_active - the exact same functions SCHEDULER_WAIT,
+CAPTAIN_TRANSFER/REVERT and the pretest already use) and executor/connectivity.py's
+check_connectivity, unmodified.
 
 Each check function returns a list[CheckResult] - plain, formatting-agnostic data.
 Two renderers (terminal, markdown - see report.py) consume the same results, so a new

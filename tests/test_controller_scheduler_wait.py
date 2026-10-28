@@ -1,8 +1,10 @@
 """Tests for the SCHEDULER_WAIT action (wait_for_scheduling_resumed) - polling
 splunk list shcluster-member-info after a search head restarts, to confirm the
-scheduler's delegation pool actually accepted it back (not just basic shcluster
-membership health, which is what CLUSTER_WAIT checks - see test_controller_cluster_wait.py
-and the 2026-10-22 incident noted in actions/sequences.py). No real SSH."""
+scheduler's delegation pool actually accepted it back. This is the sole post-restart
+health gate for search heads - a separate CLUSTER_WAIT membership-only poll used to
+run first, removed 2026-10-28 since scheduling resumed already implies healthy
+membership (see actions/sequences.py and the 2026-10-22 incident it documents).
+No real SSH."""
 from auto_patchinator.executor.credentials import SplunkApiCredentials
 from auto_patchinator.executor.ssh import CommandResult
 from auto_patchinator.plan.action_mapping import map_team_steps

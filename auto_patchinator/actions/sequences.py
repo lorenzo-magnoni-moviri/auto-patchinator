@@ -123,61 +123,33 @@ def clean_kvstore(splunk_bin: str) -> Action:
     )
 
 
-def wait_for_shcluster_member_healthy(splunk_bin: str) -> Action:
-    """Poll this search head's own search-head-cluster membership status after it
-    restarts, until it reports healthy or the timeout elapses - the search-head half
-    of TODO.md's "Cluster status validation via Splunk API" (indexer cluster is out
-    of scope here). Executed via `splunk show shcluster-status --verbose -auth
-    "<user>:<password>"` over the same SSH session as everything else
-    (runner/controller.py's _execute_cluster_wait; parsing in executor/splunk_cli.py)
-    - `-auth`, not `-u` (see clean_kvstore-adjacent findings in TODO.md, and
-    captain_revert_dynamic's own -auth usage above). Needs Splunk API credentials
-    (SPLUNK_API_USER + SPLUNK_API_PASSWORD in .env); forced manual (verify by hand)
-    if they aren't configured - see runner/controller.py's is_forced_manual."""
-    return Action(
-        name="wait_for_shcluster_member_healthy",
-        kind=ActionKind.CLUSTER_WAIT,
-        identity=Identity.SPLUNK,
-        poll_interval_seconds=15,
-        timeout_seconds=600,  # cluster rejoin + artifact sync after a restart can take a while
-        note=(
-            "Confirm this host's own search-head-cluster membership is healthy before "
-            "moving on - splunk show shcluster-status --verbose finds it in the "
-            "'Members:' section:\n"
-            f"   {splunk_bin} show shcluster-status --verbose -auth <user>:<password>\n"
-            "Look for THIS host's own entry - confirm status: Up, out_of_sync_node: 0, "
-            "restart_required: 0."
-        ),
-    )
-
-
 # 10 min timeout / 5 min poll interval (operator-specified, 2026-10-22, after a real
-# incident - see wait_for_scheduling_resumed below): basic shcluster membership health
-# (wait_for_shcluster_member_healthy above) can be confirmed within its own 10 min
-# window while the search scheduler's delegation pool is still not accepting jobs for
-# this member - that gap was observed to persist for hours in production, so this
-# poll's own timeout is deliberately generous rather than tight; two poll attempts (at
-# 5 min and 10 min) is enough to not flag a merely-mid-cycle host as broken.
+# incident): a search head can look fine by basic shcluster membership/replication
+# status within minutes of restarting, while the search scheduler's delegation pool
+# is still not accepting jobs for it - that gap was observed to persist for hours in
+# production (a real incident caught it: "Remote Scheduler is not ready to receive
+# jobs... requisite pool members have not joined", _internal sourcetype=scheduler /
+# splunkd.log, status=delegated_remote_error). A separate CLUSTER_WAIT action used to
+# poll membership health first, then this one for scheduling - merged into just this
+# one poll (2026-10-28, operator feedback: two separate per-node wait steps checking
+# two different things was overdoing it) since a host that's actually receiving
+# delegated scheduled searches is, by definition, already a healthy cluster member -
+# scheduling resumed is the stronger signal and implies membership health, so there's
+# no need to check the weaker one separately. This poll's own timeout is deliberately
+# generous rather than tight; two poll attempts (at 5 min and 10 min) is enough to not
+# flag a merely-mid-cycle host as broken.
 _SCHEDULER_WAIT_POLL_INTERVAL_SECONDS = 300
 _SCHEDULER_WAIT_TIMEOUT_SECONDS = 600
 
 
 def wait_for_scheduling_resumed(splunk_bin: str) -> Action:
     """Poll this search head's own active_historical_search_count (via `splunk list
-    shcluster-member-info -auth`) after it rejoins the cluster, until it shows at
-    least one active search or the timeout elapses. Runs AFTER
-    wait_for_shcluster_member_healthy, deliberately separate from it:
-    member_health only confirms basic shcluster replication/membership status
-    (status/out_of_sync_node/restart_required), not whether the search scheduler's
-    delegation pool has actually accepted this member back - a real incident
-    (2026-10-22) showed a member pass that membership check cleanly while the
-    captain's delegated scheduled-search jobs to it kept failing for hours with
-    "Remote Scheduler is not ready to receive jobs... requisite pool members have not
-    joined" (visible in _internal sourcetype=scheduler / splunkd.log, status=
-    delegated_remote_error) - nothing in the wave's own health check would have
-    caught that at the time, since it only polls once right after start_splunk, not
-    on an ongoing basis. Needs Splunk API credentials, same as
-    wait_for_shcluster_member_healthy; forced manual if they aren't configured."""
+    shcluster-member-info -auth`) after it restarts, until it shows at least one
+    active search or the timeout elapses - the sole post-restart health gate for
+    search heads (see the module-level comment above for why a separate membership-
+    only check was removed). Needs Splunk API credentials (SPLUNK_API_USER +
+    SPLUNK_API_PASSWORD in .env); forced manual (verify by hand) if they aren't
+    configured - see runner/controller.py's is_forced_manual."""
     return Action(
         name="wait_for_scheduling_resumed",
         kind=ActionKind.SCHEDULER_WAIT,
@@ -270,15 +242,15 @@ def search_head_simple_sequences() -> RoleSequences:
         stop_per_node=_default_stop(SPLUNK_BIN),
         start_per_node=(
             *_default_start(SPLUNK_BIN),
-            wait_for_shcluster_member_healthy(SPLUNK_BIN),
             wait_for_scheduling_resumed(SPLUNK_BIN),
         ),
     )
 
 
 # Zero live data yet on how long a real cluster-wide election/bootstrap takes to
-# settle - starting with the same conservative values as CLUSTER_WAIT (a similar
-# "cluster needs to converge" operation) and refining after a live rehearsal, same as
+# settle - starting with the same conservative values as wait_for_scheduling_resumed
+# (a similar "cluster needs to converge" operation) and refining after a live
+# rehearsal, same as
 # STREAMSETS_PIPELINE's poll interval/timeout were tuned after seeing real timings.
 _CAPTAIN_POLL_INTERVAL_SECONDS = 15
 _CAPTAIN_TIMEOUT_SECONDS = 600
@@ -345,7 +317,6 @@ def search_head_stretched_sequences() -> RoleSequences:
             daemon_reload(),
             clean_kvstore(SPLUNK_BIN),
             start_splunk(SPLUNK_BIN),
-            wait_for_shcluster_member_healthy(SPLUNK_BIN),
             wait_for_scheduling_resumed(SPLUNK_BIN),
         ),
     )

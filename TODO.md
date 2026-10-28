@@ -76,6 +76,62 @@ Open items, roughly in priority order.
   - 13 new tests (6 in `tests/test_splunk_cli.py`, 7 in new
     `tests/test_controller_scheduler_wait.py` mirroring
     `tests/test_controller_cluster_wait.py`'s structure) - 231 total suite.
+- [x] **New `health-check` subcommand: read-only cluster health checks, printed to the
+  terminal and written to a markdown report** (2026-10-28, operator request - we'd been
+  doing a lot of ad-hoc live diagnosis this way already, via one-off scripts, and
+  wanted it as a real, repeatable command). Entirely new, additive code
+  (`auto_patchinator/healthcheck/`) - the "running in PROD, be careful touching
+  already-tested code" constraint was explicit, so this module deliberately does NOT
+  import `preflight.py`'s private helpers even though it reimplements some of the same
+  parsing (e.g. KV store member parsing) - self-contained instead of coupling to
+  another module's internals. Reuses the stable, already-multiply-used *public*
+  helpers in `executor/splunk_cli.py` (`parse_captain`, `parse_shcluster_members`,
+  `member_health`, `find_member`, `parse_member_info`, `scheduling_active`) and
+  `executor/connectivity.py`'s `check_connectivity`, unmodified.
+  - `auto-patchinator health-check --group {search-heads,forwarders,indexers,full}` -
+    `--group` is optional; omitting it prompts interactively (same "skip the prompt by
+    passing the flag" pattern as `--full-auto-mode` for `run`).
+  - Declarative per-group check registry (`healthcheck/checks.py`): each group is a
+    tuple of `(check_name, fn)` pairs, `fn(ctx) -> list[CheckResult]`; adding a new
+    check to an existing group is exactly one line. `GROUPS` is the top-level registry
+    the CLI, terminal printer, and markdown report all walk generically.
+  - Search heads: `cluster_membership` (per-host, same `member_health` rule
+    `CLUSTER_WAIT` uses), `captain_and_election` (cluster-wide - asks whichever member
+    answers first, same pattern as the pretest's captain check; a *static* captain is
+    reported informationally, not as a failure - transfer/revert deliberately leave a
+    cluster on a static captain for a while during a wave), `scheduling` (per-host,
+    reuses `scheduling_active` - see the `SCHEDULER_WAIT` entry above for why this is a
+    separate signal from membership health), `kvstore_sync` (cluster-wide, reimplements
+    `preflight.py`'s `_check_kvstore` regex algorithm independently rather than
+    importing it - see module docstring).
+  - Forwarders: `up` (thin wrapper around `check_connectivity`, unmodified).
+  - Indexers: `cluster_membership` and `search_replication_factor`, added once
+    `prdmilbbspkdp01` (the Milano deployer host, confirmed live by the operator to also
+    be the one and only indexer cluster manager for this fleet's single multi-site
+    cluster - `INDEXER_CLUSTER_MANAGER_HOSTNAME` in `checks.py`) came back from
+    patching and its real `splunk show cluster-status --verbose` output could be
+    captured and parsed against. One query to this one host reports on every indexer
+    peer on both sites (unlike the two separate search-head clusters above), so there's
+    one cluster manager to query, not one per role/site. Live-verified against real
+    production the same day: correctly surfaced Milano's indexers as `Stopped`
+    mid-patching and both site factors as not-yet-met, Roma's as healthy.
+  - `healthcheck/report.py`'s `write_report`/`generate_markdown_report` mirror
+    `reports/report.py`'s same `write_report(...) -> Path` pattern - grouped markdown
+    tables, one per group/check, plus a summary line. Reports land in `reports/`
+    (gitignored, not pruned, same as the wave-run report).
+  - 36 new tests (`tests/test_healthcheck_checks.py`, `tests/test_healthcheck_report.py`)
+    - monkeypatch the module's one seam (`_run_splunk_command`) and
+    `check_connectivity`, same style as `test_preflight.py`'s `_splunk_show`
+    monkeypatching. Full existing suite (231 tests) passes unchanged, confirming
+    nothing pre-existing was touched.
+  - Known gap, not yet fixed: the per-host SHC loops (`_shc_membership`,
+    `_shc_scheduling`) are fully sequential - `ctx.max_parallel_hosts` is threaded
+    through `CheckContext` but not actually used for concurrency there (only
+    `_fw_up_check` uses it, via `check_connectivity`'s own `max_workers`). A
+    `--group search-heads` run across the full fleet (13 hosts) took several minutes
+    live. Terminal output is also batch-printed per group rather than streamed
+    per-result. Worth revisiting if this command gets used often enough for the wait
+    to matter.
 - [x] **Verbose per-host progress for `CAPTAIN_TRANSFER`/`CAPTAIN_REVERT` in automatic
   mode** (2026-09-24, operator feedback after the live transfer test: the terse
   `"[group] transfer captain static ... DONE"` line every other automatic-mode action

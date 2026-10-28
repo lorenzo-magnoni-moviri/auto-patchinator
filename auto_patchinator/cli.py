@@ -17,6 +17,8 @@ from auto_patchinator.executor.credentials import (
     prompt_credentials,
 )
 from auto_patchinator.executor.ssh import DryRunConnection, SSHConnection
+from auto_patchinator.healthcheck import checks as healthcheck
+from auto_patchinator.healthcheck.report import write_report as write_healthcheck_report
 from auto_patchinator.logging_setup import setup_run_logging
 from auto_patchinator.preflight import run_pretest
 from auto_patchinator.term import green, red, yellow
@@ -124,6 +126,35 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         metavar="HOSTNAME",
         default=None,
         help="Test only these hosts (default: all hosts in inventory)",
+    )
+
+    hc_parser = subparsers.add_parser(
+        "health-check",
+        help="Run read-only health checks (cluster membership, captain/election, "
+             "scheduling, KV store sync, connectivity) and write a markdown report",
+    )
+    hc_parser.add_argument(
+        "--group",
+        choices=["search-heads", "forwarders", "indexers", "full"],
+        default=None,
+        help="Which group to check. If omitted, prompts interactively (same pattern "
+             "as --full-auto-mode for 'run': passing this skips that prompt).",
+    )
+    hc_parser.add_argument(
+        "--inventory",
+        default=None,
+        help=f"Path to hosts.yaml (default: '{DEFAULT_INVENTORY_PATH}')",
+    )
+    hc_parser.add_argument("--environment", default="prod", choices=["prod", "test"],
+                           help="Which environment to target (default: prod)")
+    hc_parser.add_argument("--logs-dir", default="logs")
+    hc_parser.add_argument("--reports-dir", default="reports")
+    hc_parser.add_argument(
+        "--max-parallel-hosts",
+        type=int,
+        default=3,
+        metavar="N",
+        help="Check this many hosts concurrently within a check (default: 3, same as 'run').",
     )
 
     return parser
@@ -401,6 +432,82 @@ def cmd_check_connectivity(args: argparse.Namespace) -> None:
                 print(f"  {r.hostname}  [{r.identity.value}]  {r.detail}")
 
 
+_HEALTHCHECK_GROUP_ARG_TO_KEY = {
+    "search-heads": healthcheck.GROUP_SEARCH_HEADS,
+    "forwarders": healthcheck.GROUP_FORWARDERS,
+    "indexers": healthcheck.GROUP_INDEXERS,
+}
+
+
+def _ask_healthcheck_group() -> str:
+    print("\nWhich group do you want to check?")
+    print("  [1] Search heads")
+    print("  [2] Forwarders")
+    print("  [3] Indexers")
+    print("  [4] Full checkup (all groups)")
+    choices = {"1": "search-heads", "2": "forwarders", "3": "indexers", "4": "full"}
+    while True:
+        raw = input("    > ").strip()
+        if raw in choices:
+            return choices[raw]
+        print("Please choose 1, 2, 3, or 4.")
+
+
+def cmd_health_check(args: argparse.Namespace) -> None:
+    args.inventory = _resolve_inventory_path(args.inventory)
+    log_path = setup_run_logging(args.logs_dir, f"health-check-{datetime.now():%Y%m%dT%H%M%S}")
+    print(f"Logging to {log_path}")
+    inventory = load_inventory(args.inventory, args.environment)
+    gateway_host, gateway_port = _resolve_pas_gateway(inventory)
+    if gateway_host:
+        print(f"PAS gateway: {gateway_host}:{gateway_port}")
+    else:
+        print("WARNING: no PAS gateway configured ('pas_gateway' in the inventory) - will SSH "
+              "directly to each node, which PAS-fronted nodes refuse.")
+    credentials = prompt_credentials()
+    splunk_api_credentials = load_splunk_api_credentials()
+
+    group_arg = args.group or _ask_healthcheck_group()
+    selected_groups = (
+        healthcheck.GROUPS if group_arg == "full"
+        else [g for g in healthcheck.GROUPS if g[0] == _HEALTHCHECK_GROUP_ARG_TO_KEY[group_arg]]
+    )
+
+    ctx = healthcheck.CheckContext(
+        inventory=inventory,
+        credentials=credentials,
+        gateway_host=gateway_host,
+        gateway_port=gateway_port,
+        splunk_api_credentials=splunk_api_credentials,
+        max_parallel_hosts=args.max_parallel_hosts,
+    )
+
+    status_color = {True: green, False: red, None: yellow}
+    status_label = {True: "OK", False: "FAIL", None: "SKIP"}
+
+    all_results: list[healthcheck.CheckResult] = []
+    for _key, display_name, group_checks in selected_groups:
+        print(f"\n=== {display_name} ===")
+        if not group_checks:
+            print(yellow("  (no checks registered for this group yet)"))
+            continue
+        results = healthcheck.run_group_checks(ctx, group_checks)
+        all_results += results
+        col_w = max((len(r.scope) for r in results), default=20)
+        for r in results:
+            color = status_color[r.passed]
+            print(f"  [{r.check}] {r.scope:<{col_w}}  {color(status_label[r.passed]):<4}  {r.detail}")
+
+    ok = sum(1 for r in all_results if r.passed is True)
+    fail = sum(1 for r in all_results if r.passed is False)
+    skip = sum(1 for r in all_results if r.passed is None)
+    print(f"\n{ok} OK  {fail} FAIL  {skip} SKIP")
+
+    run_id = f"{group_arg}-{datetime.now():%Y%m%dT%H%M%S}"
+    report_path = write_healthcheck_report(all_results, run_id, args.reports_dir)
+    print(f"Report written to {report_path}")
+
+
 def _new_run_state(args: argparse.Namespace, run_plan):
     run_id = f"{Path(args.excel).stem}-{datetime.now():%Y%m%dT%H%M%S}"
     return store.build_initial_state(run_id, args.excel, HOST_SHEET_NAME, run_plan)
@@ -413,6 +520,8 @@ def main() -> None:
         cmd_run(args)
     elif args.command == "check-connectivity":
         cmd_check_connectivity(args)
+    elif args.command == "health-check":
+        cmd_health_check(args)
 
 
 if __name__ == "__main__":

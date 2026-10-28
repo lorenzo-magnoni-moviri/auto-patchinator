@@ -19,6 +19,7 @@ Adding a new check for an existing group is exactly one line: append to that gro
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from auto_patchinator.actions.sequences import NodeRole, splunk_bin_for
@@ -104,28 +105,44 @@ def _hostnames_by_role(ctx: CheckContext, role: NodeRole) -> list[str]:
     return sorted(h for h, host in ctx.inventory.hosts.items() if host.role == role)
 
 
+def _run_per_host(ctx: CheckContext, hostnames: list[str], fn) -> list[CheckResult]:
+    """Runs fn(hostname) -> CheckResult for each hostname, respecting
+    ctx.max_parallel_hosts - same "sequential when there's nothing to gain, one
+    thread per host otherwise, results returned in the original hostname order
+    regardless of completion order" pattern as executor/connectivity.py's
+    check_connectivity. A live `--group search-heads` run across the full fleet (13
+    hosts) was fully sequential before this and took several minutes - found live,
+    2026-10-28."""
+    if ctx.max_parallel_hosts <= 1 or len(hostnames) <= 1:
+        return [fn(hostname) for hostname in hostnames]
+    ordered: list[CheckResult | None] = [None] * len(hostnames)
+    with ThreadPoolExecutor(max_workers=ctx.max_parallel_hosts) as pool:
+        futures = {pool.submit(fn, hostname): index for index, hostname in enumerate(hostnames)}
+        for future, index in futures.items():
+            ordered[index] = future.result()
+    return ordered
+
+
 # ---------------------------------------------------------------------------
 # Search heads
 # ---------------------------------------------------------------------------
 
 def _shc_membership(ctx: CheckContext, hostnames: list[str]) -> list[CheckResult]:
-    results = []
-    for hostname in hostnames:
+    def check_one(hostname: str) -> CheckResult:
         guard = _needs_splunk_api_credentials(ctx, GROUP_SEARCH_HEADS, "cluster_membership", hostname)
         if guard:
-            results.append(guard)
-            continue
+            return guard
         try:
             output = _run_splunk_command(ctx, hostname, "show shcluster-status --verbose")
             fields = find_member(parse_shcluster_members(output), hostname)
             healthy, detail = member_health(fields)
-            results.append(CheckResult(GROUP_SEARCH_HEADS, "cluster_membership", hostname, healthy, detail))
+            return CheckResult(GROUP_SEARCH_HEADS, "cluster_membership", hostname, healthy, detail)
         except Exception as exc:  # noqa: BLE001 - surfaced to the operator, not swallowed
-            results.append(CheckResult(
+            return CheckResult(
                 GROUP_SEARCH_HEADS, "cluster_membership", hostname, None,
                 str(exc).splitlines()[0] if str(exc) else type(exc).__name__,
-            ))
-    return results
+            )
+    return _run_per_host(ctx, hostnames, check_one)
 
 
 def _shc_captain_and_election(ctx: CheckContext, cluster_label: str, hostnames: list[str]) -> list[CheckResult]:
@@ -157,23 +174,60 @@ def _shc_captain_and_election(ctx: CheckContext, cluster_label: str, hostnames: 
     return [CheckResult(GROUP_SEARCH_HEADS, "captain_and_election", f"{cluster_label}", None, last_error)]
 
 
-def _shc_scheduling(ctx: CheckContext, hostnames: list[str]) -> list[CheckResult]:
-    results = []
+def _shc_find_captain_label(ctx: CheckContext, hostnames: list[str]) -> str | None:
+    """Determine this cluster's current captain label by asking whichever host
+    answers first - same "ask any one reachable member" pattern as
+    _shc_captain_and_election, kept separate (rather than reusing that check's own
+    result) so _shc_scheduling can call it directly without string-parsing another
+    check's detail text. Best-effort: a miss here just means no special-casing below,
+    not a failure of its own."""
     for hostname in hostnames:
+        try:
+            output = _run_splunk_command(ctx, hostname, "show shcluster-status --verbose")
+            label = parse_captain(output).get("label")
+            if label:
+                return label
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def _is_captain(hostname: str, captain_label: str | None) -> bool:
+    """Same exact-or-'<hostname>.<domain>' matching rule as find_member, so a short
+    inventory hostname ('shx01') correctly matches an FQDN captain label
+    ('shx01.sky.local')."""
+    if not captain_label:
+        return False
+    return hostname == captain_label or captain_label.startswith(f"{hostname}.")
+
+
+def _shc_scheduling(ctx: CheckContext, hostnames: list[str]) -> list[CheckResult]:
+    creds = ctx.splunk_api_credentials
+    has_creds = bool(creds and creds.username and creds.password)
+    # A cluster's captain never gets scheduled searches delegated to itself, so its
+    # own active_historical_search_count=0 is expected, not a failure - confirmed
+    # live 2026-10-28 (prdmilbbmsosh01, the simple cluster's static captain, showed
+    # exactly this). One extra single-host query per cluster to learn who that is;
+    # skipped entirely without credentials, same as every per-host query below.
+    captain_label = _shc_find_captain_label(ctx, hostnames) if (has_creds and hostnames) else None
+
+    def check_one(hostname: str) -> CheckResult:
         guard = _needs_splunk_api_credentials(ctx, GROUP_SEARCH_HEADS, "scheduling", hostname)
         if guard:
-            results.append(guard)
-            continue
+            return guard
         try:
             output = _run_splunk_command(ctx, hostname, "list shcluster-member-info")
             active, detail = scheduling_active(parse_member_info(output))
-            results.append(CheckResult(GROUP_SEARCH_HEADS, "scheduling", hostname, active, detail))
+            if not active and _is_captain(hostname, captain_label):
+                detail = f"{detail}  (this host is the current captain - captains don't get scheduled searches delegated to themselves, so 0 is expected)"
+                return CheckResult(GROUP_SEARCH_HEADS, "scheduling", hostname, True, detail)
+            return CheckResult(GROUP_SEARCH_HEADS, "scheduling", hostname, active, detail)
         except Exception as exc:  # noqa: BLE001
-            results.append(CheckResult(
+            return CheckResult(
                 GROUP_SEARCH_HEADS, "scheduling", hostname, None,
                 str(exc).splitlines()[0] if str(exc) else type(exc).__name__,
-            ))
-    return results
+            )
+    return _run_per_host(ctx, hostnames, check_one)
 
 
 def _parse_kvstore_members(output: str) -> dict[str, dict[str, str]]:
@@ -242,9 +296,17 @@ def _shc_captain_and_election_check(ctx: CheckContext) -> list[CheckResult]:
 
 
 def _shc_scheduling_check(ctx: CheckContext) -> list[CheckResult]:
+    # Stretched and simple are separate SHC clusters with independent captains (see
+    # CLAUDE.md) - checked separately, same as captain_and_election/kvstore_sync
+    # above, so each cluster's own captain is the one _shc_scheduling special-cases.
+    results: list[CheckResult] = []
     stretched = _hostnames_by_role(ctx, NodeRole.SEARCH_HEAD_STRETCHED)
     simple = _hostnames_by_role(ctx, NodeRole.SEARCH_HEAD_SIMPLE)
-    return _shc_scheduling(ctx, stretched + simple)
+    if stretched:
+        results += _shc_scheduling(ctx, stretched)
+    if simple:
+        results += _shc_scheduling(ctx, simple)
+    return results
 
 
 def _shc_kvstore_check(ctx: CheckContext) -> list[CheckResult]:

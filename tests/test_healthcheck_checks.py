@@ -101,11 +101,25 @@ def _without_role(inventory, role):
 
 
 def _fake_run_splunk_command(responses, calls=None):
-    """responses: {hostname: str | Exception}. Records (hostname, command_suffix)."""
+    """responses: {hostname: str | Exception} for a single response regardless of
+    which command is requested, or {hostname: {command_substring: str | Exception}}
+    when a test needs a host to answer differently depending on which command it
+    was asked (e.g. the scheduling check's captain lookup and its own per-host
+    member-info query can both target the same host). Records (hostname,
+    command_suffix)."""
     def fake(ctx, hostname, command_suffix):
         if calls is not None:
             calls.append((hostname, command_suffix))
-        result = responses[hostname]
+        entry = responses[hostname]
+        if isinstance(entry, dict):
+            for key, value in entry.items():
+                if key in command_suffix:
+                    result = value
+                    break
+            else:
+                raise KeyError(f"no matching command stub for {hostname} / {command_suffix!r}")
+        else:
+            result = entry
         if isinstance(result, Exception):
             raise result
         return result
@@ -264,6 +278,45 @@ def test_shc_scheduling_check_maps_active_and_inactive(inventory, monkeypatch):
     assert by_scope["shs01"].passed is False
 
 
+def test_shc_scheduling_zero_count_on_the_captain_is_not_a_failure(inventory, monkeypatch):
+    """shx02 is both the stretched cluster's captain and inactive (0 count) - expected,
+    not a FAIL, confirmed live 2026-10-28 (prdmilbbmsosh01, the simple cluster's static
+    captain, showed exactly this)."""
+    captain_status = SHCLUSTER_STATUS_DYNAMIC.replace("prdmilbbspksh04.sky.local", "shx02.sky.local")
+    monkeypatch.setattr(hc, "_run_splunk_command", _fake_run_splunk_command({
+        "shx01": {"shcluster-status": captain_status, "member-info": MEMBER_INFO_ACTIVE},
+        "shx02": {"shcluster-status": captain_status, "member-info": MEMBER_INFO_INACTIVE},
+    }))
+    from auto_patchinator.actions.sequences import NodeRole
+    stretched_only = _without_role(inventory, NodeRole.SEARCH_HEAD_SIMPLE)
+    results = hc._shc_scheduling_check(_ctx(stretched_only))
+    by_scope = {r.scope: r for r in results}
+    assert by_scope["shx01"].passed is True
+    assert by_scope["shx02"].passed is True
+    assert "current captain" in by_scope["shx02"].detail
+
+
+def test_shc_scheduling_zero_count_on_a_non_captain_is_still_a_failure(inventory, monkeypatch):
+    captain_status = SHCLUSTER_STATUS_DYNAMIC.replace("prdmilbbspksh04.sky.local", "shx01.sky.local")
+    monkeypatch.setattr(hc, "_run_splunk_command", _fake_run_splunk_command({
+        "shx01": {"shcluster-status": captain_status, "member-info": MEMBER_INFO_ACTIVE},
+        "shx02": {"shcluster-status": captain_status, "member-info": MEMBER_INFO_INACTIVE},
+    }))
+    from auto_patchinator.actions.sequences import NodeRole
+    stretched_only = _without_role(inventory, NodeRole.SEARCH_HEAD_SIMPLE)
+    results = hc._shc_scheduling_check(_ctx(stretched_only))
+    by_scope = {r.scope: r for r in results}
+    assert by_scope["shx02"].passed is False
+
+
+def test_shc_scheduling_skips_captain_lookup_without_credentials(inventory, monkeypatch):
+    calls = []
+    monkeypatch.setattr(hc, "_run_splunk_command", _fake_run_splunk_command({}, calls))
+    results = hc._shc_scheduling_check(_ctx(inventory, configured=False))
+    assert calls == []
+    assert results and all(r.passed is None for r in results)
+
+
 # ---------------------------------------------------------------------------
 # Search heads: kvstore_sync
 # ---------------------------------------------------------------------------
@@ -416,6 +469,43 @@ def test_ix_factors_check_skips_without_credentials(inventory, monkeypatch):
     monkeypatch.setattr(hc, "_run_splunk_command", exploding)
     results = hc._ix_factors_check(_ctx(inventory, configured=False))
     assert results and all(r.passed is None for r in results)
+
+
+# ---------------------------------------------------------------------------
+# _run_per_host concurrency helper
+# ---------------------------------------------------------------------------
+
+def test_run_per_host_runs_concurrently_and_preserves_order(inventory):
+    """A barrier that needs all 3 calls in flight at once proves genuine
+    concurrency - a sequential implementation would block on the first call and
+    time out, since the other two would never get a chance to run."""
+    import threading
+    barrier = threading.Barrier(3, timeout=2)
+
+    def fn(hostname):
+        barrier.wait()
+        return hc.CheckResult("g", "c", hostname, True, "ok")
+
+    ctx = _ctx(inventory, max_parallel_hosts=3)
+    results = hc._run_per_host(ctx, ["a", "b", "c"], fn)
+    assert [r.scope for r in results] == ["a", "b", "c"]
+
+
+def test_run_per_host_sequential_when_max_parallel_hosts_is_one(inventory):
+    calls = []
+
+    def fn(hostname):
+        calls.append(hostname)
+        return hc.CheckResult("g", "c", hostname, True, "ok")
+
+    ctx = _ctx(inventory, max_parallel_hosts=1)
+    results = hc._run_per_host(ctx, ["a", "b"], fn)
+    assert calls == ["a", "b"]
+    assert [r.scope for r in results] == ["a", "b"]
+
+
+def test_run_per_host_empty_hostnames(inventory):
+    assert hc._run_per_host(_ctx(inventory), [], lambda h: None) == []
 
 
 # ---------------------------------------------------------------------------

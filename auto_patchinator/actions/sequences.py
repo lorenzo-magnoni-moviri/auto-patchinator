@@ -282,7 +282,8 @@ def captain_transfer_static(new_captain_host: str, cluster_hostnames: tuple[str,
 
 
 def captain_revert_dynamic(captain_host: str, cluster_hostnames: tuple[str, ...]) -> Action:
-    """Injected once after the last stretched-SH start in a wave (post_group).
+    """Injected once at the very end of the wave (post_group of the LAST step of the
+    plan, after every other start - not right after the last stretched-SH start).
     Re-enables dynamic election on every member except captain_host (the same host
     captain_transfer_static set), then on captain_host itself, then bootstraps from
     captain_host with the full cluster server list so a real election can pick the
@@ -304,7 +305,7 @@ def captain_revert_dynamic(captain_host: str, cluster_hostnames: tuple[str, ...]
 
 
 def search_head_stretched_sequences() -> RoleSequences:
-    # Captain transfer/revert are injected once per wave (first stop / last start)
+    # Captain transfer/revert are injected once per wave (before the first stop / at the end of the last step)
     # by build_run_plan, not repeated per group. clean_kvstore must run before
     # start_splunk, not after - the KV store is cleaned while splunk is still down.
     # It's only needed when the node was down long enough for its local copy to go

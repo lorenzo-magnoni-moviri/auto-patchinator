@@ -117,7 +117,10 @@ def _inject_captain_actions(
     inventory: Inventory,
 ) -> list[RunStepPlan]:
     """Inject captain transfer once before the first stretched-SH stop in the wave,
-    and captain revert once after the last stretched-SH start."""
+    and captain revert once at the very end of the wave (post-group actions of the
+    LAST step of the plan, whatever its role), not right after the last stretched-SH
+    start - the cluster stays on the static captain until the whole patching activity
+    is done (operator, 2026-11-18)."""
     if not inventory.stretched_sh_sites:
         return plans
 
@@ -162,15 +165,20 @@ def _inject_captain_actions(
             pre_group_actions=(captain_transfer_static(captain_host, cluster_hostnames),) + p.pre_group_actions,
         )
     if last_start_idx is not None:
-        p = result[last_start_idx]
-        captain_host = inventory.captain_candidate(_other_site(p))
+        # The temporary captain is derived from the last stretched-SH start step (same
+        # rule as the transfer: a host on the site NOT patched), but the action itself
+        # goes on the last step of the whole plan. It is a cluster-wide post_group
+        # action, so it doesn't depend on that step's own hosts.
+        captain_host = inventory.captain_candidate(_other_site(result[last_start_idx]))
         if not captain_host:
             raise RuntimeError(
                 "captain revert: no stretched search_head_stretched host found on the "
                 "untouched site - inventory.hosts.yaml is missing one, can't identify "
                 "the temporary captain to revert"
             )
-        result[last_start_idx] = dataclasses.replace(
+        end_idx = len(result) - 1
+        p = result[end_idx]
+        result[end_idx] = dataclasses.replace(
             p,
             post_group_actions=p.post_group_actions + (captain_revert_dynamic(captain_host, cluster_hostnames),),
         )

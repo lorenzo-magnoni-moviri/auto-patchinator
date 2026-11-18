@@ -6,6 +6,19 @@ Open items, roughly in priority order.
 
 ## Recently done
 
+- [x] **Captain revert moved to the end of the wave** (2026-11-18, operator: "the captain
+  revert to dynamic must be done at the end of the patching activity instead of
+  immediately after turning up again the SH"). `_inject_captain_actions`
+  (`plan/run_plan.py`) used to append `revert_captain_dynamic` to the post-group
+  actions of the last stretched-SH *start* step; it now appends it to the post-group
+  actions of the LAST step of the whole plan (so any later forwarder/indexer/deployer
+  start still runs on the static captain), still before that step's `send_mail`. The
+  temporary captain is computed as before (other site of the last stretched-SH start
+  step); still no revert when the plan has no stretched-SH start. Tests:
+  `tests/test_run_plan.py` (updated + 2 new). Not run live (dry-run/unit only). Note for
+  the operator: if the run stops before its last step, the cluster is left on the static
+  captain, and the next pretest flags it (`captain_and_election`).
+
 - [x] **Merged the search-head post-restart membership-health check into the
   scheduling-resumed check - one step per node instead of two** (2026-10-28, operator
   feedback after reviewing the new `health-check` subcommand's live output: checking

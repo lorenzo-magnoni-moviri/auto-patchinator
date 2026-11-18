@@ -474,9 +474,12 @@ them into a `RunStepPlan`. Two cross-cutting behaviors are applied afterward acr
 - **Captain transfer/revert injection** (`_inject_captain_actions`): if any stretched
   search-head host appears anywhere in the wave, a manual "transfer captain to the
   other site" action is inserted before the **first** stretched-SH stop step in the
-  whole wave, and a manual "revert captain to dynamic election" action is appended after
-  the **last** stretched-SH start step — once per wave, not once per group, since the
-  captain election is cluster-wide, not per-group.
+  whole wave, and a "revert captain to dynamic election" action is appended at the **end
+  of the wave** — the post-group actions of the last step of the plan (whatever its
+  role, ahead of that step's `send_mail`), not right after the last stretched-SH start,
+  so the cluster stays on the static captain until the whole patching activity is done.
+  Once per wave, not once per group, since the captain election is cluster-wide, not
+  per-group.
 - **`send_mail` injection** (`_append_send_mail`): every single `RunStepPlan` gets a
   manual "send completion e-mail for this step" action appended as its very last
   post-group action.
@@ -644,7 +647,7 @@ same concrete host both directions use:
   `shcluster-status --verbose` until the whole cluster confirms the static captain, up
   to a 600s timeout (15s apart) - no live data yet on real settle time, so this starts
   conservative, same as `SCHEDULER_WAIT`.
-- **After the last stretched-SH start in the wave** — re-enables dynamic election on
+- **At the end of the wave (last step of the plan, post-group)** — re-enables dynamic election on
   every member except the current captain (concurrently), then the captain itself,
   then from that host,
   `bootstrap shcluster-captain -servers_list "https://host1.sky.local:8089,..." -auth admin:<password>`

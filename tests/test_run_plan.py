@@ -46,11 +46,48 @@ def test_captain_transfer_injected_once_before_first_stretched_stop(inventory):
         for p in plans for a in p.post_group_actions if a.name == "revert_captain_dynamic"
     ]
     assert transfers == [(2, "transfer_captain_static")]   # only the FIRST stop
-    assert reverts == [(7, "revert_captain_dynamic")]      # only the LAST start
+    assert reverts == [(7, "revert_captain_dynamic")]      # once, on the last step of the plan
     # the new captain is on the other site (shx01 is milano -> roma's shx02)
     transfer_action = plans[0].pre_group_actions[0]
     assert transfer_action.captain_host == "shx02"
     assert transfer_action.cluster_hostnames == ("shx01", "shx02")
+
+
+def test_captain_revert_waits_for_the_end_of_the_wave(inventory):
+    """The revert goes on the LAST step of the plan, not right after the last
+    stretched-SH start: later steps (here a forwarder and an indexer start) still run
+    on the static captain, and the revert comes before that step's send_mail."""
+    rows = [
+        make_raw(2, "Stop application Group 1", deps=()),    # stretched shx01
+        make_raw(3, "Stop application Group 2", deps=(2,)),  # forwarder fw01
+        make_raw(4, "Start application Group 1", deps=(3,)),  # last stretched-SH start
+        make_raw(5, "Start application Group 2", deps=(4,)),  # forwarder start, after it
+        make_raw(6, "Start application Group 3", deps=(5,)),  # indexer start, the final step
+    ]
+    mapping = {1: ("shx01",), 2: ("fw01",), 3: ("ix01",)}
+    plans = _plan(rows, mapping, inventory)
+
+    where = [
+        (p.excel_step, [a.name for a in p.post_group_actions])
+        for p in plans if any(a.name == "revert_captain_dynamic" for a in p.post_group_actions)
+    ]
+    assert len(where) == 1
+    step, names = where[0]
+    assert step == plans[-1].excel_step
+    assert names[-2:] == ["revert_captain_dynamic", "send_mail"]
+    # temporary captain unchanged: a host on the site not patched (shx01 is milano -> shx02)
+    revert = next(a for a in plans[-1].post_group_actions if a.name == "revert_captain_dynamic")
+    assert revert.captain_host == "shx02"
+    assert revert.cluster_hostnames == ("shx01", "shx02")
+
+
+def test_no_captain_revert_without_a_stretched_sh_start(inventory):
+    rows = [
+        make_raw(2, "Stop application Group 1", deps=()),   # stretched shx01
+        make_raw(3, "Start application Group 2", deps=(2,)),  # forwarder only
+    ]
+    plans = _plan(rows, {1: ("shx01",), 2: ("fw01",)}, inventory)
+    assert not [a for p in plans for a in p.post_group_actions if a.name == "revert_captain_dynamic"]
 
 
 def test_group_actions_deduped_per_role_not_per_host(inventory):
